@@ -1,6 +1,7 @@
 import pickle as pkl
 import scipy.signal
 import numpy as np
+import pandas as pd
 
 
 def unpickle_data(sfilepath, gfilepath):
@@ -41,3 +42,23 @@ def create_bag(subject, E_thres, Kt):
         bag.extend(padding)
 
     return np.array(bag)
+
+
+def form_dataset(tremor_data, E_thres, Kt):
+    data = []
+    for subject_id in tremor_data.keys():
+        # Check if the subject's annotations are valid
+        if isinstance(tremor_data[subject_id][1], dict) and 'tremor_manual' in tremor_data[subject_id][1]:
+            # Create the bag for the subject
+            bag = create_bag(tremor_data[subject_id], E_thres, Kt)
+
+            # Get the associated label
+            label = tremor_data[subject_id][1]['tremor_manual']
+
+            # Append the tuple (X, y) to the data list
+            data.append((bag, label))
+
+    # Create a DataFrame from the data list
+    df = pd.DataFrame(data, columns=['X', 'y'])
+
+    return df

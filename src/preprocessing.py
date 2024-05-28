@@ -1,4 +1,3 @@
-import numpy as np
 from utils import *
 import time
 import matplotlib.pyplot as plt
@@ -32,11 +31,11 @@ print(segment_energy)
 # # print(subject)
 # print('energy', calculate_energy(np.array([[0, 0, 0], [0, 0, 0], [1, 1, 1], [5, 5, 5]])))
 
-bag = create_bag(tremor_sdata['6cc41389d3e9aea9'], 0.15, 1500)
+E_thres = 0.15
+Kt = 1500
+bag = create_bag(tremor_sdata['6cc41389d3e9aea9'], E_thres, Kt)
+sdataset = form_dataset(tremor_sdata, E_thres, Kt)
 
-print('--------------------------------')
-print(bag)
-print(type(bag))
-print(len(bag))
+print(sdataset)
 
 print(time.time() - start)
