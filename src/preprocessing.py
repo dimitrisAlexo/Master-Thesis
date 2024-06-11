@@ -1,6 +1,5 @@
 from utils import *
 import time
-import matplotlib.pyplot as plt
 import os
 
 start = time.time()
