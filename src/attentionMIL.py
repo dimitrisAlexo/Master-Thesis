@@ -1,6 +1,5 @@
-import numpy as np
-
 import psutil
+
 from utils import *
 import os
 import time
@@ -26,27 +25,6 @@ start = time.time()
 
 np.set_printoptions(threshold=sys.maxsize)
 
-"""
-## Create dataset
-
-We will create a set of bags and assign their labels according to their contents.
-If at least one positive instance
-is available in a bag, the bag is considered as a positive bag. If it does not contain any
-positive instance, the bag will be considered as negative.
-
-### Configuration parameters
-
-- `POSITIVE_CLASS`: The desired class to be kept in the positive bag.
-- `BAG_COUNT`: The number of training bags.
-- `VAL_BAG_COUNT`: The number of validation bags.
-- `BAG_SIZE`: The number of instances in a bag.
-- `PLOT_SIZE`: The number of bags to plot.
-- `ENSEMBLE_AVG_COUNT`: The number of models to create and average together. (Optional:
-often results in better performance - set to 1 for single model)
-"""
-
-ENSEMBLE_AVG_COUNT = 1
-
 os.environ["tf_gpu_allocator"] = "cuda_malloc_async"
 
 
@@ -54,6 +32,7 @@ def print_memory_usage():
     process = psutil.Process()
     mem_info = process.memory_info()
     print(f"Memory Usage: {mem_info.rss / (1024 ** 2):.2f} MB")
+
 
 # os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # run on CPU
 
@@ -64,13 +43,12 @@ if tf.config.list_physical_devices('GPU'):
 else:
     print("Using CPU...")
 
-
 # Mixed precision policy
 policy = mixed_precision.Policy('mixed_float16')
 mixed_precision.set_global_policy(policy)
 print("Using mixed precision...")
 
-k.set_floatx("float16")
+# k.set_floatx("float16")
 
 
 class MILAttentionLayer(layers.Layer):
@@ -261,32 +239,26 @@ def create_model(input_shape):
     return keras.Model(model_input, output)
 
 
-def compute_class_weights(labels):
-    # Count number of positive and negative bags.
-    negative_count = len(np.where(labels == 0)[0])
-    positive_count = len(np.where(labels == 1)[0])
-    total_count = negative_count + positive_count
-
-    # Build class weight dictionary.
-    return {
-        0: (1 / negative_count) * (total_count / 2),
-        1: (1 / positive_count) * (total_count / 2),
-    }
+# def compute_class_weights(labels):
+#     # Count number of positive and negative bags.
+#     negative_count = len(np.where(labels == 0)[0])
+#     positive_count = len(np.where(labels == 1)[0])
+#     total_count = negative_count + positive_count
+#
+#     # Build class weight dictionary.
+#     return {
+#         0: (1 / negative_count) * (total_count / 2),
+#         1: (1 / positive_count) * (total_count / 2),
+#     }
 
 
 class ClearMemory(callbacks.Callback):
 
-    def on_train_end(self, logs=None):
-        # gc.collect()
-
-        print_memory_usage()
-
+    def on_train_begin(self, logs=None):
         k.clear_session()
         gc.collect()
 
-        print_memory_usage()
-
-        print("Memory cleared after training.")
+        print("Memory cleared.")
 
 
 def train(train_dataset, val_dataset, model):
@@ -312,16 +284,11 @@ def train(train_dataset, val_dataset, model):
     # when the generalization error cease to decrease.
     early_stopping = callbacks.EarlyStopping(
         monitor="val_loss",
-        patience=20,
+        patience=10,
         mode="min",
         verbose=1,
-        start_from_epoch=10
-    )
-
-    f1_score = metrics.F1Score(
-        average="weighted",
-        threshold=0.5,
-        name='f1_score'
+        start_from_epoch=10,
+        restore_best_weights=False
     )
 
     clear_memory = ClearMemory()
@@ -332,6 +299,7 @@ def train(train_dataset, val_dataset, model):
         # optimizer=optimizers.Adam(learning_rate=1e-3),
         loss="sparse_categorical_crossentropy",
         metrics=["accuracy"],
+        auto_scale_loss=True
     )
 
     # Fit model.
@@ -362,16 +330,6 @@ sdataset, mask = form_dataset(tremor_sdata, E_thres, Kt)
 
 print(sdataset)
 
-# print(min(len(sdataset['X'][i]) for i in range(len(sdataset['X']))))
-#
-# count = 0
-# for index, row in sdataset.iterrows():
-#         bag = row['X']
-#         num_instances = len(bag)
-#         print(f"Bag {index} contains {num_instances} instances.")
-#         count += 1
-# print(count)
-
 # Split the dataset into training and validation sets with an 80/20 split
 train_df, val_df = train_test_split(sdataset, test_size=0.2, random_state=42)
 
@@ -381,30 +339,8 @@ train_labels = np.array([np.array([label]) for label in train_df['y'].tolist()])
 val_data = np.array(val_df['X'].tolist())
 val_labels = np.array([np.array([label]) for label in val_df['y'].tolist()])
 
-# Print lengths to verify the split
-print(f'Training data size: {np.shape(np.array(train_data))}')
-
-# train_data = list(np.transpose(train_data, (1, 0, 2, 3)))
-
-print(f'Training data: {np.shape(np.array(train_data))}')
-
-print(f'Training labels: {np.shape(train_labels)}')
-print(f'Validation data: {len(val_data)}')
-print(f'Validation labels: {val_labels.shape}')
-
-print(type(train_data))
-print(type(train_data[0]))
-print(type(train_data[0][0]))
-print(type(train_labels))
-print(type(train_labels[0]))
 print(np.shape(train_data))
 print(np.shape(train_labels))
-
-# # Print the splits
-# print(f'Training data: {train_data}')
-# print(f'Training labels: {train_labels}')
-# print(f'Validation data: {val_data}')
-# print(f'Validation labels: {val_labels}')
 
 # Building model(s).
 B, Kt, Ws, C = train_data.shape
@@ -412,62 +348,35 @@ print(B, Kt, Ws, C)
 input_shape = (Kt, Ws, C)
 print(input_shape)
 M = 64
-models = [create_model(input_shape) for _ in range(ENSEMBLE_AVG_COUNT)]
-
-# print(models[0].input)
-# print(models[0].output)
+model = create_model(input_shape)
 
 # Show single model architecture.
-print(models[0].summary())
-
-# # Training model(s).
-# trained_models = [
-#     train(train_data, train_labels, val_data, val_labels, model)
-#     for model in tqdm(models)
-# ]
+print(model.summary())
 
 
-def predict(dataset, trained_models):
-    # Collect info per model.
-    models_predictions = []
-    models_attention_weights = []
-    models_losses = []
-    models_accuracies = []
+def predict(dataset, trained_model):
 
-    for model in trained_models:
-        # Predict output classes on data.
-        predictions = model.predict(dataset)
+    # Predict output classes on data.
+    predictions = trained_model.predict(dataset)
 
-        print("I AM HERE MAMA")
+    # Create intermediate model to get MIL attention layer weights.
+    intermediate_model = keras.Model(trained_model.input, trained_model.get_layer("alpha").output)
 
-        models_predictions.append(predictions)
-        #
-        # # Create intermediate model to get MIL attention layer weights.
-        # intermediate_model = keras.Model(model.input, model.get_layer("alpha").output)
-        #
-        # # Predict MIL attention layer weights.
-        # intermediate_predictions = intermediate_model.predict(data)
-        #
-        # attention_weights = np.squeeze(np.swapaxes(intermediate_predictions, 1, 0))
-        # models_attention_weights.append(attention_weights)
+    # Predict MIL attention layer weights.
+    intermediate_predictions = intermediate_model.predict(dataset)
 
-        loss, accuracy = model.evaluate(dataset, verbose=0)
-        models_losses.append(loss)
-        models_accuracies.append(accuracy)
+    attention_weights = np.squeeze(np.swapaxes(intermediate_predictions, 1, 0))
+
+    loss, accuracy = trained_model.evaluate(dataset, verbose=0)
 
     print(
-        f"The average loss and accuracy are {np.sum(models_losses, axis=0) / ENSEMBLE_AVG_COUNT:.2f}"
-        f" and {100 * np.sum(models_accuracies, axis=0) / ENSEMBLE_AVG_COUNT:.2f} % resp."
+        f"The average loss and accuracy are {loss}"
+        f" and {100 * accuracy} % resp."
     )
 
-    return (
-        np.sum(models_predictions, axis=0) / ENSEMBLE_AVG_COUNT,
-        np.sum(models_attention_weights, axis=0) / ENSEMBLE_AVG_COUNT,
-    )
+    return predictions, attention_weights
 
 
-# Evaluate and predict classes and attention scores on validation data.
-# class_predictions, attention_params = predict(val_data, val_labels, trained_models)
 
 def loso_evaluate(data):
     # Extract the bags and labels
@@ -476,7 +385,6 @@ def loso_evaluate(data):
 
     # Initialize LeaveOneOut
     loo = LeaveOneOut()
-    overall_accuracies = []
 
     tn, fp, fn, tp = 0, 0, 0, 0
 
@@ -497,13 +405,23 @@ def loso_evaluate(data):
         val_data = list(np.transpose(val_data, (1, 0, 2, 3)))
         val_labels = np.array([np.array([label]) for label in val_label])
 
-        models = [create_model(input_shape) for _ in range(ENSEMBLE_AVG_COUNT)]
+        print_memory_usage()
+
+        train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
+        train_dataset = train_dataset.shuffle(buffer_size=len(train_data)).batch(1).prefetch(
+            buffer_size=tf.data.AUTOTUNE)
+        val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
+        val_dataset = val_dataset.batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
+
+        current_model = create_model(input_shape)
 
         # Train the models on the training data
-        trained_models = [train(train_data, train_labels, val_data, val_labels, model) for model in models]
+        trained_model = train(train_dataset, val_dataset, current_model)
+
+        print_memory_usage()
 
         # Evaluate the model on the validation data
-        class_predictions, attention_params = predict(val_data, val_labels, trained_models)
+        class_predictions, attention_params = predict(val_dataset, trained_model)
 
         # Compute confusion matrix
         predicted_label = np.argmax(class_predictions, axis=1).flatten()
@@ -555,32 +473,25 @@ def rkf_evaluate(data, k, n_repeats):
         val_data = np.array(val_bags)
         val_labels = np.array([np.array([label]) for label in val_label])
 
-        # # Prepare train data
-        # train_data = np.array([np.array(instance) for instance in train_bags])
-        # train_data = list(np.transpose(train_data, (1, 0, 2, 3)))
-        # train_labels = np.array([np.array([label]) for label in train_labels])
-        #
-        # # Prepare validation data
-        # val_data = np.array([np.array(instance) for instance in val_bag])
-        # val_data = list(np.transpose(val_data, (1, 0, 2, 3)))
-        # val_labels = np.array([np.array([label]) for label in val_label])
-
         print_memory_usage()
 
         train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
-        train_dataset = train_dataset.shuffle(buffer_size=len(train_data)).batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
+        train_dataset = train_dataset.shuffle(buffer_size=len(train_data)).batch(1).prefetch(
+            buffer_size=tf.data.AUTOTUNE)
         val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
         val_dataset = val_dataset.batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
 
-        models = [create_model(input_shape) for _ in range(ENSEMBLE_AVG_COUNT)]
+        current_model = create_model(input_shape)
 
         # Train the models on the training data
-        trained_models = [train(train_dataset, val_dataset, model) for model in models]
+        trained_model = train(train_dataset, val_dataset, current_model)
 
-        print_memory_usage()
+        trained_model.load_weights('../best_model.weights.h5')
 
         # Evaluate the model on the validation data
-        class_predictions, attention_params = predict(val_dataset, trained_models)
+        class_predictions, attention_params = predict(val_dataset, trained_model)
+
+        del trained_model
 
         # Compute confusion matrix
         predicted_labels = np.argmax(class_predictions, axis=1).flatten()
