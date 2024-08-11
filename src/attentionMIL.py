@@ -1,5 +1,6 @@
 import numpy as np
 
+import psutil
 from utils import *
 import os
 import time
@@ -46,9 +47,17 @@ often results in better performance - set to 1 for single model)
 
 ENSEMBLE_AVG_COUNT = 1
 
-# os.environ["tf_gpu_allocator"] = "cuda_malloc_async"
+os.environ["tf_gpu_allocator"] = "cuda_malloc_async"
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # run on CPU
+
+def print_memory_usage():
+    process = psutil.Process()
+    mem_info = process.memory_info()
+    print(f"Memory Usage: {mem_info.rss / (1024 ** 2):.2f} MB")
+
+# os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # run on CPU
+
+os.environ['XLA_FLAGS'] = '--xla_gpu_strict_conv_algorithm_picker=false'
 
 if tf.config.list_physical_devices('GPU'):
     print("Using GPU...")
@@ -56,13 +65,12 @@ else:
     print("Using CPU...")
 
 
-# # Mixed precision policy
-# policy = mixed_precision.Policy('mixed_float16')
-# mixed_precision.set_global_policy(policy)
-# print("Using mixed precision...")
+# Mixed precision policy
+policy = mixed_precision.Policy('mixed_float16')
+mixed_precision.set_global_policy(policy)
+print("Using mixed precision...")
 
-# k.set_floatx("float16")
-# print(k.floatx())
+k.set_floatx("float16")
 
 
 class MILAttentionLayer(layers.Layer):
@@ -141,10 +149,10 @@ class MILAttentionLayer(layers.Layer):
         instance_weights = self.compute_attention_scores(inputs)
 
         # Apply masking
-        # masked_weights = layers.Add()([mask_layer, instance_weights])
+        masked_weights = layers.Add()([mask_layer, instance_weights])
 
         # Apply softmax over instances such that the output summation is equal to 1.
-        alpha = ops.softmax(instance_weights, axis=0)
+        alpha = ops.softmax(masked_weights, axis=1)
 
         # Split to recreate the same array of tensors we had as inputs.
         return alpha
@@ -208,8 +216,6 @@ def final_classifier(concat):
     # Layer 3: Dense 16 → 2, 2-way softmax
     output = layers.Dense(2, activation='softmax')(dropout_2)
 
-    # output = layers.Dense(2, activation="softmax")(concat)
-
     return output
 
 
@@ -225,7 +231,7 @@ def create_model(input_shape):
         summed_features = tf.squeeze(summed_features, axis=-1)
 
         # Create a mask where summed_features is zero
-        mask = tf.where(tf.abs(summed_features) < 1e-6, -1e30, summed_features)
+        mask = tf.where(tf.abs(summed_features) < 1e-3, -np.inf, 0)
 
         return mask
 
@@ -256,7 +262,7 @@ def create_model(input_shape):
 
 
 def compute_class_weights(labels):
-    # Count number of postive and negative bags.
+    # Count number of positive and negative bags.
     negative_count = len(np.where(labels == 0)[0])
     positive_count = len(np.where(labels == 1)[0])
     total_count = negative_count + positive_count
@@ -270,12 +276,20 @@ def compute_class_weights(labels):
 
 class ClearMemory(callbacks.Callback):
 
-    def on_epoch_end(self, epoch, logs=None):
-        gc.collect()
+    def on_train_end(self, logs=None):
+        # gc.collect()
+
+        print_memory_usage()
+
         k.clear_session()
+        gc.collect()
+
+        print_memory_usage()
+
+        print("Memory cleared after training.")
 
 
-def train(train_data, train_labels, val_data, val_labels, model):
+def train(train_dataset, val_dataset, model):
     # Train model.
     # Prepare callbacks.
     # Path where to save best weights.
@@ -300,7 +314,8 @@ def train(train_data, train_labels, val_data, val_labels, model):
         monitor="val_loss",
         patience=20,
         mode="min",
-        verbose=1
+        verbose=1,
+        start_from_epoch=10
     )
 
     f1_score = metrics.F1Score(
@@ -321,14 +336,13 @@ def train(train_data, train_labels, val_data, val_labels, model):
 
     # Fit model.
     model.fit(
-        train_data,
-        train_labels,
-        validation_data=(val_data, val_labels),
-        epochs=100,
-        class_weight=compute_class_weights(train_labels),
+        train_dataset,
+        validation_data=val_dataset,
+        epochs=50,
+        # class_weight=compute_class_weights(train_labels),
         batch_size=8,
-        callbacks=[early_stopping, model_checkpoint],
-        verbose=0,
+        callbacks=[early_stopping, model_checkpoint, clear_memory],
+        verbose=1,
     )
 
     # Load best weights.
@@ -343,12 +357,10 @@ gdata_path = os.path.join('..', 'data', 'tremor_gdata.pickle')
 tremor_sdata, tremor_gdata = unpickle_data(sdata_path, gdata_path)
 
 E_thres = 0.15
-Kt = 100
+Kt = 1500
 sdataset, mask = form_dataset(tremor_sdata, E_thres, Kt)
 
 print(sdataset)
-print(mask)
-print(np.shape(mask))
 
 # print(min(len(sdataset['X'][i]) for i in range(len(sdataset['X']))))
 #
@@ -408,14 +420,14 @@ models = [create_model(input_shape) for _ in range(ENSEMBLE_AVG_COUNT)]
 # Show single model architecture.
 print(models[0].summary())
 
-# Training model(s).
-trained_models = [
-    train(train_data, train_labels, val_data, val_labels, model)
-    for model in tqdm(models)
-]
+# # Training model(s).
+# trained_models = [
+#     train(train_data, train_labels, val_data, val_labels, model)
+#     for model in tqdm(models)
+# ]
 
 
-def predict(data, labels, trained_models):
+def predict(dataset, trained_models):
     # Collect info per model.
     models_predictions = []
     models_attention_weights = []
@@ -424,19 +436,22 @@ def predict(data, labels, trained_models):
 
     for model in trained_models:
         # Predict output classes on data.
-        predictions = model.predict(data)
+        predictions = model.predict(dataset)
+
+        print("I AM HERE MAMA")
+
         models_predictions.append(predictions)
+        #
+        # # Create intermediate model to get MIL attention layer weights.
+        # intermediate_model = keras.Model(model.input, model.get_layer("alpha").output)
+        #
+        # # Predict MIL attention layer weights.
+        # intermediate_predictions = intermediate_model.predict(data)
+        #
+        # attention_weights = np.squeeze(np.swapaxes(intermediate_predictions, 1, 0))
+        # models_attention_weights.append(attention_weights)
 
-        # Create intermediate model to get MIL attention layer weights.
-        intermediate_model = keras.Model(model.input, model.get_layer("alpha").output)
-
-        # Predict MIL attention layer weights.
-        intermediate_predictions = intermediate_model.predict(data)
-
-        attention_weights = np.squeeze(np.swapaxes(intermediate_predictions, 1, 0))
-        models_attention_weights.append(attention_weights)
-
-        loss, accuracy = model.evaluate(data, labels, verbose=0)
+        loss, accuracy = model.evaluate(dataset, verbose=0)
         models_losses.append(loss)
         models_accuracies.append(accuracy)
 
@@ -452,8 +467,7 @@ def predict(data, labels, trained_models):
 
 
 # Evaluate and predict classes and attention scores on validation data.
-class_predictions, attention_params = predict(val_data, val_labels, trained_models)
-
+# class_predictions, attention_params = predict(val_data, val_labels, trained_models)
 
 def loso_evaluate(data):
     # Extract the bags and labels
@@ -551,13 +565,22 @@ def rkf_evaluate(data, k, n_repeats):
         # val_data = list(np.transpose(val_data, (1, 0, 2, 3)))
         # val_labels = np.array([np.array([label]) for label in val_label])
 
+        print_memory_usage()
+
+        train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
+        train_dataset = train_dataset.shuffle(buffer_size=len(train_data)).batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
+        val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
+        val_dataset = val_dataset.batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
+
         models = [create_model(input_shape) for _ in range(ENSEMBLE_AVG_COUNT)]
 
         # Train the models on the training data
-        trained_models = [train(train_data, train_labels, val_data, val_labels, model) for model in models]
+        trained_models = [train(train_dataset, val_dataset, model) for model in models]
+
+        print_memory_usage()
 
         # Evaluate the model on the validation data
-        class_predictions, attention_params = predict(val_data, val_labels, trained_models)
+        class_predictions, attention_params = predict(val_dataset, trained_models)
 
         # Compute confusion matrix
         predicted_labels = np.argmax(class_predictions, axis=1).flatten()
