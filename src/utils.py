@@ -27,6 +27,15 @@ def calculate_energy(segment, fs=100, nperseg=500, band=None):
     return np.sum(energies)  # Sum energy across all axes
 
 
+def calculate_metrics(tn, fp, fn, tp):
+    accuracy = (tp + tn) / (tn + fp + fn + tp)
+    sensitivity = tp / (tp + fn)
+    specificity = tn / (tn + fp)
+    precision = tp / (tp + fp)
+    f1_score = 2 * sensitivity * precision / (sensitivity + precision)
+    return accuracy, sensitivity, specificity, precision, f1_score
+
+
 def create_bag(subject, E_thres, Kt):
     bag = []
     for session in subject[3]:
@@ -37,38 +46,46 @@ def create_bag(subject, E_thres, Kt):
     bag = bag[:Kt]
 
     if len(bag) < min(30, Kt):
-        return None, None
+        return None
 
     # Zero-padding if less than Kt segments
     if len(bag) < Kt:
-        bag_mask = [1] * len(bag) + [0] * (Kt - len(bag))
         padding = [np.zeros((500, 3)) for _ in range(Kt - len(bag))]
         bag.extend(padding)
-    else:
-        bag_mask = [1] * Kt
 
-    return np.array(bag), np.array(bag_mask)
+    return np.array(bag)
 
 
-def form_dataset(tremor_data, E_thres, Kt):
+def form_dataset(tremor_data, E_thres, Kt, train_label_str, test_label_str):
+    # Set of valid labels
+    valid_labels = {'updrs16', 'updrs20', 'updrs21', 'tremor_manual'}
+    assert train_label_str in valid_labels, f"train_label_str '{train_label_str}' is not valid."
+    assert test_label_str in valid_labels, f"test_label_str '{test_label_str}' is not valid."
+
     data = []
-    mask = []
     for subject_id in tremor_data.keys():
         # Check if the subject's annotations are valid
-        if isinstance(tremor_data[subject_id][1], dict) and 'tremor_manual' in tremor_data[subject_id][1]:
+        if isinstance(tremor_data[subject_id][1], dict):
             # Create the bag for the subject
-            bag, bag_mask = create_bag(tremor_data[subject_id], E_thres, Kt)
+            bag = create_bag(tremor_data[subject_id], E_thres, Kt)
 
             # Get the associated label
-            label = tremor_data[subject_id][1]['tremor_manual']
+            train_label = tremor_data[subject_id][1][train_label_str]
+
+            if test_label_str == 'updrs20':
+                test_label = 0 if tremor_data[subject_id][1]['updrs20_right'] + tremor_data[subject_id][1][
+                    'updrs20_left'] == 0 else 1
+            elif test_label_str == 'updrs21':
+                test_label = 0 if tremor_data[subject_id][1]['updrs21_right'] + tremor_data[subject_id][1][
+                    'updrs21_left'] == 0 else 1
+            else:
+                test_label = 0 if tremor_data[subject_id][1][test_label_str] == 0 else 1
 
             # Append the tuple (X, y) to the data list
             if bag is not None:
-                data.append((bag, label))
-                mask.append(bag_mask)
+                data.append((bag, train_label, test_label))
 
     # Create a DataFrame from the data list
-    df = pd.DataFrame(data, columns=['X', 'y'])
-    mask = np.array(mask)
+    df = pd.DataFrame(data, columns=['X', 'y_train', 'y_test'])
 
-    return df, mask
+    return df

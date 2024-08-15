@@ -33,7 +33,8 @@ print(segment_energy)
 E_thres = 0.15
 Kt = 1500
 bag = create_bag(tremor_sdata['6cc41389d3e9aea9'], E_thres, Kt)
-sdataset = form_dataset(tremor_sdata, E_thres, Kt)
+# {'updrs16', 'updrs20_right', 'updrs20_left', 'updrs21_right', 'updrs21_left', 'tremor_manual'}
+sdataset = form_dataset(tremor_sdata, E_thres, Kt, 'tremor_manual', 'tremor_manual')
 
 print(sdataset)
 

@@ -1,3 +1,4 @@
+import numpy as np
 import psutil
 
 from utils import *
@@ -47,6 +48,7 @@ else:
 policy = mixed_precision.Policy('mixed_float16')
 mixed_precision.set_global_policy(policy)
 print("Using mixed precision...")
+
 
 # k.set_floatx("float16")
 
@@ -154,22 +156,26 @@ class MILAttentionLayer(layers.Layer):
 
 def embeddings_function(embeddings_input, M):
     # Layer 1
-    x = layers.Conv1D(filters=32, kernel_size=8, padding='same')(embeddings_input)
+    x = layers.ZeroPadding1D(padding=1)(embeddings_input)
+    x = layers.Conv1D(filters=32, kernel_size=8, padding='valid')(x)
     x = layers.LeakyReLU(negative_slope=0.2)(x)
     x = layers.MaxPooling1D(pool_size=2)(x)
 
     # Layer 2
-    x = layers.Conv1D(filters=32, kernel_size=8, padding='same')(x)
+    x = layers.ZeroPadding1D(padding=1)(x)
+    x = layers.Conv1D(filters=32, kernel_size=8, padding='valid')(x)
     x = layers.LeakyReLU(negative_slope=0.2)(x)
     x = layers.MaxPooling1D(pool_size=2)(x)
 
     # Layer 3
-    x = layers.Conv1D(filters=16, kernel_size=16, padding='same')(x)
+    x = layers.ZeroPadding1D(padding=1)(x)
+    x = layers.Conv1D(filters=16, kernel_size=16, padding='valid')(x)
     x = layers.LeakyReLU(negative_slope=0.2)(x)
     x = layers.MaxPooling1D(pool_size=2)(x)
 
     # Layer 4
-    x = layers.Conv1D(filters=16, kernel_size=16, padding='same')(x)
+    x = layers.ZeroPadding1D(padding=1)(x)
+    x = layers.Conv1D(filters=16, kernel_size=16, padding='valid')(x)
     x = layers.LeakyReLU(negative_slope=0.2)(x)
     x = layers.MaxPooling1D(pool_size=2)(x)
 
@@ -261,6 +267,14 @@ class ClearMemory(callbacks.Callback):
         print("Memory cleared.")
 
 
+def lr_schedule(epoch, lr):
+    total_epochs = 50
+    decay_start_epoch = total_epochs // 2  # Start decay at the halfway point of the training
+    if epoch >= decay_start_epoch:
+        return lr * 0.9  # Decay the learning rate by a factor of 0.9
+    return lr
+
+
 def train(train_dataset, val_dataset, model):
     # Train model.
     # Prepare callbacks.
@@ -287,11 +301,13 @@ def train(train_dataset, val_dataset, model):
         patience=10,
         mode="min",
         verbose=1,
-        start_from_epoch=10,
+        start_from_epoch=20,
         restore_best_weights=False
     )
 
+    # Callbacks
     clear_memory = ClearMemory()
+    lr_scheduler = callbacks.LearningRateScheduler(lr_schedule)
 
     # Compile model.
     model.compile(
@@ -305,11 +321,11 @@ def train(train_dataset, val_dataset, model):
     # Fit model.
     model.fit(
         train_dataset,
-        validation_data=val_dataset,
+        validation_data=train_dataset,
         epochs=50,
         # class_weight=compute_class_weights(train_labels),
         batch_size=8,
-        callbacks=[early_stopping, model_checkpoint, clear_memory],
+        callbacks=[model_checkpoint, lr_scheduler, clear_memory],
         verbose=1,
     )
 
@@ -326,25 +342,13 @@ tremor_sdata, tremor_gdata = unpickle_data(sdata_path, gdata_path)
 
 E_thres = 0.15
 Kt = 1500
-sdataset, mask = form_dataset(tremor_sdata, E_thres, Kt)
+# {'updrs16', 'updrs20', 'updrs21', 'tremor_manual'}
+sdataset = form_dataset(tremor_sdata, E_thres, Kt, 'tremor_manual', 'tremor_manual')
 
 print(sdataset)
 
-# Split the dataset into training and validation sets with an 80/20 split
-train_df, val_df = train_test_split(sdataset, test_size=0.2, random_state=42)
-
-train_data = np.array(train_df['X'].tolist())
-train_labels = np.array([np.array([label]) for label in train_df['y'].tolist()])
-
-val_data = np.array(val_df['X'].tolist())
-val_labels = np.array([np.array([label]) for label in val_df['y'].tolist()])
-
-print(np.shape(train_data))
-print(np.shape(train_labels))
-
 # Building model(s).
-B, Kt, Ws, C = train_data.shape
-print(B, Kt, Ws, C)
+Kt, Ws, C = np.array(sdataset['X'])[0].shape
 input_shape = (Kt, Ws, C)
 print(input_shape)
 M = 64
@@ -355,7 +359,6 @@ print(model.summary())
 
 
 def predict(dataset, trained_model):
-
     # Predict output classes on data.
     predictions = trained_model.predict(dataset)
 
@@ -377,11 +380,11 @@ def predict(dataset, trained_model):
     return predictions, attention_weights
 
 
-
 def loso_evaluate(data):
     # Extract the bags and labels
     bags = data['X'].tolist()
-    labels = data['y'].tolist()
+    y_train = data['y_train'].tolist()
+    y_test = data['y_test'].tolist()
 
     # Initialize LeaveOneOut
     loo = LeaveOneOut()
@@ -391,21 +394,15 @@ def loso_evaluate(data):
     for train_index, test_index in loo.split(bags):
         # Split the data into training and validation sets
         train_bags = [bags[i] for i in train_index]
-        train_labels = [labels[i] for i in train_index]
+        train_labels = [y_train[i] for i in train_index]
         val_bag = [bags[i] for i in test_index]
-        val_label = [labels[i] for i in test_index]
+        val_label = [y_test[i] for i in test_index]
 
-        # Prepare train data
-        train_data = np.array([np.array(instance) for instance in train_bags])
-        train_data = list(np.transpose(train_data, (1, 0, 2, 3)))
+        train_data = np.array(train_bags)
         train_labels = np.array([np.array([label]) for label in train_labels])
 
-        # Prepare validation data
-        val_data = np.array([np.array(instance) for instance in val_bag])
-        val_data = list(np.transpose(val_data, (1, 0, 2, 3)))
+        val_data = np.array(val_bag)
         val_labels = np.array([np.array([label]) for label in val_label])
-
-        print_memory_usage()
 
         train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
         train_dataset = train_dataset.shuffle(buffer_size=len(train_data)).batch(1).prefetch(
@@ -417,6 +414,8 @@ def loso_evaluate(data):
 
         # Train the models on the training data
         trained_model = train(train_dataset, val_dataset, current_model)
+
+        trained_model.load_weights('../best_model.weights.h5')
 
         print_memory_usage()
 
@@ -441,31 +440,38 @@ def loso_evaluate(data):
             else:
                 fp += 1
 
-    # Calculate the final accuracy across all subjects
-    final_accuracy = (tp + tn) / (tp + tn + fp + fn)
-    final_f1_score = 2 * tp / (2 * tp + fp + fn)
-    print(f"Final average accuracy across all subjects: {final_accuracy * 100:.2f}%")
-    print(f"Final average F1-score across all subjects: {final_f1_score * 100:.2f}%")
+    # Calculate metrics
+    accuracy, sensitivity, specificity, precision, f1_score = calculate_metrics(tn, fp, fn, tp)
 
-    return final_accuracy
+    print(f"Final accuracy across all subjects: {accuracy * 100:.2f}%")
+    print(f"Final sensitivity across all subjects: {sensitivity * 100:.2f}%")
+    print(f"Final specificity across all subjects: {specificity * 100:.2f}%")
+    print(f"Final precision across all subjects: {precision * 100:.2f}%")
+    print(f"Final F1-score across all subjects: {f1_score * 100:.2f}%")
+
+    return
 
 
 def rkf_evaluate(data, k, n_repeats):
     # Extract the bags and labels
     bags = data['X'].tolist()
-    labels = data['y'].tolist()
+    y_train = data['y_train'].tolist()
+    y_test = data['y_test'].tolist()
 
     # Initialize RepeatedKFold
-    rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats, random_state=42)
+    rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats)
     overall_accuracies = []
+    overall_sensitivities = []
+    overall_specificities = []
+    overall_precisions = []
     overall_f1_scores = []
 
     for train_index, test_index in rkf.split(bags):
         # Split the data into training and validation sets
         train_bags = [bags[i] for i in train_index]
-        train_labels = [labels[i] for i in train_index]
+        train_labels = [y_train[i] for i in train_index]
         val_bags = [bags[i] for i in test_index]
-        val_label = [labels[i] for i in test_index]
+        val_label = [y_test[i] for i in test_index]
 
         train_data = np.array(train_bags)
         train_labels = np.array([np.array([label]) for label in train_labels])
@@ -506,25 +512,40 @@ def rkf_evaluate(data, k, n_repeats):
         print("fn:", fn)
         print("tp:", tp)
 
-        accuracy = (tp + tn) / (tp + tn + fp + fn)
-        f1_score = (2 * tp) / (2 * tp + fp + fn)
+        # Calculate metrics
+        accuracy, sensitivity, specificity, precision, f1_score = calculate_metrics(tn, fp, fn, tp)
 
         print("accuracy:", accuracy)
+        print("sensitivity:", sensitivity)
+        print("specificity:", specificity)
+        print("precision:", precision)
         print("f1_score:", f1_score)
 
         overall_accuracies.append(accuracy)
+        overall_sensitivities.append(sensitivity)
+        overall_specificities.append(specificity)
+        overall_precisions.append(precision)
         overall_f1_scores.append(f1_score)
 
     # Calculate the final accuracy across all folds and repetitions
     final_accuracy = np.mean(overall_accuracies)
+    final_sensitivity = np.mean(overall_sensitivities)
+    final_specificity = np.mean(overall_specificities)
+    final_precision = np.mean(overall_precisions)
     final_f1_score = np.mean(overall_f1_scores)
     print(f"Final average accuracy across all subjects: {final_accuracy * 100:.2f}%")
+    print(f"Final average sensitivity across all subjects: {final_sensitivity * 100:.2f}%")
+    print(f"Final average specificity across all subjects: {final_specificity * 100:.2f}%")
+    print(f"Final average precision across all subjects: {final_precision * 100:.2f}%")
     print(f"Final average F1-score across all subjects: {final_f1_score * 100:.2f}%")
 
-    return final_accuracy
+    return
 
 
 # loso_evaluate(sdataset)
-rkf_evaluate(sdataset, k=5, n_repeats=2)
+rkf_evaluate(sdataset, k=5, n_repeats=4)
 
 print(time.time() - start)
+
+# Alarm
+os.system('play -nq -t alsa synth {} sine {}'.format(1, 999))
