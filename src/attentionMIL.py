@@ -6,6 +6,7 @@ import os
 import time
 import gc
 import sys
+import resource
 
 import tensorflow as tf
 import keras
@@ -245,19 +246,6 @@ def create_model(input_shape):
     return keras.Model(model_input, output)
 
 
-# def compute_class_weights(labels):
-#     # Count number of positive and negative bags.
-#     negative_count = len(np.where(labels == 0)[0])
-#     positive_count = len(np.where(labels == 1)[0])
-#     total_count = negative_count + positive_count
-#
-#     # Build class weight dictionary.
-#     return {
-#         0: (1 / negative_count) * (total_count / 2),
-#         1: (1 / positive_count) * (total_count / 2),
-#     }
-
-
 class ClearMemory(callbacks.Callback):
 
     def on_train_begin(self, logs=None):
@@ -323,13 +311,13 @@ def train(train_dataset, val_dataset, model):
         train_dataset,
         validation_data=train_dataset,
         epochs=50,
-        # class_weight=compute_class_weights(train_labels),
         batch_size=8,
         callbacks=[model_checkpoint, lr_scheduler, clear_memory],
         verbose=1,
     )
 
     # Load best weights.
+    print("Loading best weights...")
     model.load_weights(file_path)
 
     return model
@@ -337,8 +325,8 @@ def train(train_dataset, val_dataset, model):
 
 # Adjust the paths to be relative to the current script location
 sdata_path = os.path.join('..', 'data', 'tremor_sdata.pickle')
-gdata_path = os.path.join('..', 'data', 'tremor_gdata.pickle')
-tremor_sdata, tremor_gdata = unpickle_data(sdata_path, gdata_path)
+# gdata_path = os.path.join('..', 'data', 'tremor_gdata.pickle')
+tremor_sdata = unpickle_data(sdata_path)
 
 E_thres = 0.15
 Kt = 1500
@@ -405,22 +393,22 @@ def loso_evaluate(data):
         val_labels = np.array([np.array([label]) for label in val_label])
 
         train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
-        train_dataset = train_dataset.shuffle(buffer_size=len(train_data)).batch(1).prefetch(
+        train_dataset = train_dataset.shuffle(buffer_size=len(train_data)).batch(8).prefetch(
             buffer_size=tf.data.AUTOTUNE)
         val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
-        val_dataset = val_dataset.batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
+        val_dataset = val_dataset.batch(8).prefetch(buffer_size=tf.data.AUTOTUNE)
 
         current_model = create_model(input_shape)
 
         # Train the models on the training data
         trained_model = train(train_dataset, val_dataset, current_model)
 
-        trained_model.load_weights('../best_model.weights.h5')
-
         print_memory_usage()
 
         # Evaluate the model on the validation data
         class_predictions, attention_params = predict(val_dataset, trained_model)
+
+        del trained_model
 
         # Compute confusion matrix
         predicted_label = np.argmax(class_predictions, axis=1).flatten()
@@ -482,7 +470,7 @@ def rkf_evaluate(data, k, n_repeats):
         print_memory_usage()
 
         train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
-        train_dataset = train_dataset.shuffle(buffer_size=len(train_data)).batch(1).prefetch(
+        train_dataset = train_dataset.shuffle(buffer_size=10*len(train_data)).batch(1).prefetch(
             buffer_size=tf.data.AUTOTUNE)
         val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
         val_dataset = val_dataset.batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
@@ -491,8 +479,6 @@ def rkf_evaluate(data, k, n_repeats):
 
         # Train the models on the training data
         trained_model = train(train_dataset, val_dataset, current_model)
-
-        trained_model.load_weights('../best_model.weights.h5')
 
         # Evaluate the model on the validation data
         class_predictions, attention_params = predict(val_dataset, trained_model)
@@ -532,7 +518,7 @@ def rkf_evaluate(data, k, n_repeats):
     final_sensitivity = np.mean(overall_sensitivities)
     final_specificity = np.mean(overall_specificities)
     final_precision = np.mean(overall_precisions)
-    final_f1_score = np.mean(overall_f1_scores)
+    final_f1_score = np.nanmean(overall_f1_scores)
     print(f"Final average accuracy across all subjects: {final_accuracy * 100:.2f}%")
     print(f"Final average sensitivity across all subjects: {final_sensitivity * 100:.2f}%")
     print(f"Final average specificity across all subjects: {final_specificity * 100:.2f}%")
@@ -543,7 +529,7 @@ def rkf_evaluate(data, k, n_repeats):
 
 
 # loso_evaluate(sdataset)
-rkf_evaluate(sdataset, k=5, n_repeats=4)
+rkf_evaluate(sdataset, k=5, n_repeats=2)
 
 print(time.time() - start)
 

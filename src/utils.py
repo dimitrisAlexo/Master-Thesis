@@ -4,16 +4,12 @@ import numpy as np
 import pandas as pd
 
 
-def unpickle_data(sfilepath, gfilepath):
-    # read sdata
-    with open(sfilepath, "rb") as f:
-        tremor_sdata = pkl.load(f)
+def unpickle_data(filepath):
 
-    # read gdata
-    with open(gfilepath, "rb") as f:
-        tremor_gdata = pkl.load(f)
+    with open(filepath, "rb") as f:
+        data = pkl.load(f)
 
-    return tremor_sdata, tremor_gdata
+    return data
 
 
 def calculate_energy(segment, fs=100, nperseg=500, band=None):
@@ -89,3 +85,41 @@ def form_dataset(tremor_data, E_thres, Kt, train_label_str, test_label_str):
     df = pd.DataFrame(data, columns=['X', 'y_train', 'y_test'])
 
     return df
+
+
+def filter_data(subject, E_thres, Kt):
+    bag = []
+    for session in subject[3]:
+        filtered_session = [segment for segment in session if calculate_energy(segment) > E_thres]
+        if len(filtered_session) >= 2:
+            bag.extend([segment for segment in filtered_session])
+    bag.sort(key=lambda segment: calculate_energy(segment), reverse=True)
+    bag = bag[:Kt]
+
+    if len(bag) < min(30, Kt):
+        return None
+
+    return np.array(bag)
+
+
+def form_unlabeled_dataset(tremor_data, E_thres, Kt):
+
+    data = []
+    counter = 0
+
+    for subject_id in tremor_data.keys():
+        if isinstance(tremor_data[subject_id][1], dict):
+            bag = filter_data(tremor_data[subject_id], E_thres, Kt)
+            if bag is not None:
+                counter += 1
+                print(counter)
+                # if counter > 50:
+                #     break
+                data.extend(bag)
+
+    print("Counter: ", counter)
+
+    with open("unlabeled_data.pickle", 'wb') as f:
+        pkl.dump(np.array(data[:1000]), f)
+
+    return np.array(data[:1000])
