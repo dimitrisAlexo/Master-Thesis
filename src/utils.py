@@ -120,6 +120,6 @@ def form_unlabeled_dataset(tremor_data, E_thres, Kt):
     print("Counter: ", counter)
 
     with open("unlabeled_data.pickle", 'wb') as f:
-        pkl.dump(np.array(data[:1000]), f)
+        pkl.dump(np.array(data[:30000]), f)
 
-    return np.array(data[:1000])
+    return np.array(data[:30000])
