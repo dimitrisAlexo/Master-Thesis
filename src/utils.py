@@ -2,6 +2,9 @@ import pickle as pkl
 import scipy.signal
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import roc_curve, auc, confusion_matrix
 
 
 def unpickle_data(filepath):
@@ -84,6 +87,9 @@ def form_dataset(tremor_data, E_thres, Kt, train_label_str, test_label_str):
     # Create a DataFrame from the data list
     df = pd.DataFrame(data, columns=['X', 'y_train', 'y_test'])
 
+    with open("sdataset.pickle", 'wb') as f:
+        pkl.dump(df, f)
+
     return df
 
 
@@ -119,7 +125,35 @@ def form_unlabeled_dataset(tremor_data, E_thres, Kt):
 
     print("Counter: ", counter)
 
-    with open("unlabeled_data.pickle", 'wb') as f:
-        pkl.dump(np.array(data[:30000]), f)
+    data = np.array(data)
 
-    return np.array(data[:30000])
+    # Shuffle only the batches, i.e., along the first axis
+    indices = np.random.permutation(data.shape[0])
+    data = data[indices]
+
+    with open("unlabeled_data.pickle", 'wb') as f:
+        pkl.dump(data, f)
+
+    return data
+
+
+def normalize(data):
+    # Find the min and max values for each batch (across time_steps and channels)
+    min_val = np.min(data, axis=(1, 2), keepdims=True)  # shape: (batch_size, 1, 1)
+    max_val = np.max(data, axis=(1, 2), keepdims=True)  # shape: (batch_size, 1, 1)
+
+    # Apply the normalization formula
+    data_normalized = 2 * (data - min_val) / (max_val - min_val) - 1
+
+    return data_normalized
+
+
+def normalize_window(window):
+    # Get the min and max for each window
+    min_val = np.min(window)
+    max_val = np.max(window)
+
+    # Apply the normalization formula to scale values between -1 and 1
+    normalized_window = 2 * (window - min_val) / (max_val - min_val) - 1
+
+    return normalized_window

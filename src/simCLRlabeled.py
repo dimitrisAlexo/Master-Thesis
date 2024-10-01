@@ -36,7 +36,7 @@ from sklearn.manifold import TSNE
 
 from utils import *
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # run on CPU
+# os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # run on CPU
 
 os.environ['XLA_FLAGS'] = '--xla_gpu_strict_conv_algorithm_picker=false'
 
@@ -54,21 +54,23 @@ print("Using mixed precision...")
 ## Hyperparameter setup
 """
 
+unlabeled_dataset_size = 30000
+labeled_dataset_size = 100
+
 M = 64
 E_thres = 0.15
 Kt = 100
 batch_size = 100
-num_epochs = 30
-temperature = 0.1
+num_epochs = 50
+temperature = 0.05
 
 """
 ## Dataset
 """
 
 # Adjust the paths to be relative to the current script location
-gdata_path = os.path.join('..', 'data', 'tremor_gdata.pickle')
-tremor_gdata = unpickle_data(gdata_path)
-
+# gdata_path = os.path.join('..', 'data', 'tremor_gdata.pickle')
+# tremor_gdata = unpickle_data(gdata_path)
 # gdataset = form_unlabeled_dataset(tremor_gdata, E_thres, Kt)
 
 with open("unlabeled_data.pickle", 'rb') as f:
@@ -76,14 +78,31 @@ with open("unlabeled_data.pickle", 'rb') as f:
 
 print(np.shape(gdataset))
 
-gdataset = gdataset[:2000]
+gdataset = normalize(gdataset)
+
+gdataset = gdataset[:unlabeled_dataset_size]
 
 print(np.shape(gdataset))
 
 gdataset = tf.data.Dataset.from_tensor_slices(gdataset)
 gdataset = gdataset.shuffle(buffer_size=len(gdataset)).batch(batch_size).prefetch(buffer_size=tf.data.AUTOTUNE)
 
-print(gdataset.element_spec)
+with open("labeled_windows_dataset.pickle", 'rb') as f:
+    labeled_gdataset = pkl.load(f)
+
+labeled_gdataset['X'] = labeled_gdataset['X'].apply(lambda window: normalize_window(window))
+
+print(labeled_gdataset)
+
+labeled_gdataset = tf.data.Dataset.from_tensor_slices((list(labeled_gdataset['X']), list(labeled_gdataset['y'])))
+labeled_gdataset = labeled_gdataset.shuffle(buffer_size=len(labeled_gdataset), seed=42).batch(5).prefetch(
+    buffer_size=tf.data.AUTOTUNE)
+
+print(labeled_gdataset.element_spec)
+
+train_dataset = tf.data.Dataset.zip(
+    (gdataset, labeled_gdataset)
+).prefetch(buffer_size=tf.data.AUTOTUNE)
 
 """
 ## Augmentations
@@ -91,7 +110,7 @@ print(gdataset.element_spec)
 
 
 class Augmentation:
-    def __init__(self, jitter_factor=0.1, rotation_angle=np.pi/2, block_size_ratio=0.1, crop_ratio=0.5,
+    def __init__(self, jitter_factor=0.1, rotation_angle=np.pi, block_size_ratio=0.1, crop_ratio=0.1,
                  lambda_amp=0.5,
                  n_perm_seg=4, min_seg_size=125):
         # Set default parameters for each augmentation
@@ -265,120 +284,6 @@ class Augmentation:
 
         return warped_data
 
-    # @tf.function
-    # def time_warping(self, data):
-    #     """
-    #     Apply time warping to the time-series data.
-    #     - Compress some parts of the data by discarding points.
-    #     - Stretch some parts using linear interpolation.
-    #     """
-    #     batch_size, time_steps, channels = tf.shape(data)[0], tf.shape(data)[1], tf.shape(data)[2]
-    #
-    #     # Generate a random vector of length time_steps with values -1, 0, 1 for each sample in the batch
-    #     random_warp = tf.random.uniform(shape=(time_steps,), minval=-1, maxval=2, dtype=tf.int32)
-    #     random_warp = tf.tile(tf.expand_dims(random_warp, axis=0), [batch_size, 1])
-    #
-    #     def warp_single_sample(inputs):
-    #         sample_data, warp_vector = inputs
-    #         warped_data = []
-    #
-    #         for i in range(time_steps):
-    #             # Compress (discard): if warp_vector[i] == -1, skip the current time step
-    #             if warp_vector[i] == -1:
-    #                 continue
-    #             # Stretch (interpolate): if warp_vector[i] == 1, average the current and the next time step
-    #             elif warp_vector[i] == 1:
-    #                 if i < time_steps - 1:
-    #                     interpolated_value = (sample_data[i, :] + sample_data[i + 1, :]) / 2
-    #                     warped_data.append(sample_data[i, :])  # Add the original point
-    #                     warped_data.append(interpolated_value)  # Add the interpolated point
-    #                 else:
-    #                     warped_data.append(sample_data[i, :])  # At the end, no interpolation possible
-    #             # No action: if warp_vector[i] == 0, keep the data as-is
-    #             else:
-    #                 warped_data.append(sample_data[i, :])
-    #
-    #         # Convert warped data back to tensor
-    #         warped_data = tf.stack(warped_data)
-    #
-    #         # Resize only the time dimension (axis 0) to match the original time_steps using bilinear interpolation
-    #         warped_data_resized = tf.image.resize(tf.expand_dims(warped_data, axis=1), [time_steps, 1],
-    #                                               method="bilinear")
-    #
-    #         return tf.squeeze(warped_data_resized, axis=1)
-    #
-    #     # Apply the time warping to each sample in the batch
-    #     warped_batch = tf.map_fn(warp_single_sample, (data, random_warp), fn_output_signature=tf.float32)
-    #
-    #     return warped_batch
-
-    # @tf.function
-    # def time_warping(self, data):
-    #     """
-    #     Apply time warping to the time-series data.
-    #     - Compress some parts of the data by discarding points.
-    #     - Stretch some parts using linear interpolation.
-    #     """
-    #     batch_size, time_steps, channels = tf.shape(data)[0], tf.shape(data)[1], tf.shape(data)[2]
-    #
-    #     # Generate a random vector of length time_steps with values -1, 0, 1 for each sample in the batch
-    #     random_warp = tf.random.uniform(shape=(time_steps,), minval=-1, maxval=2, dtype=tf.int32)
-    #     random_warp = tf.tile(tf.expand_dims(random_warp, axis=0), [batch_size, 1])
-    #
-    #     def warp_single_sample(inputs):
-    #         sample_data, warp_vector = inputs
-    #
-    #         # Initialize a TensorArray to store warped data
-    #         warped_data = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
-    #
-    #         def loop_body(i, warped_data):
-    #             warp_value = warp_vector[i]
-    #
-    #             # Compress (discard): if warp_value == -1, skip the current time step
-    #             def compress_step(warped_data):
-    #                 return warped_data
-    #
-    #             # Stretch (interpolate): if warp_value == 1, average the current and the next time step
-    #             def stretch_step(warped_data):
-    #                 next_i = tf.minimum(i + 1, time_steps - 1)
-    #                 interpolated_value = (sample_data[i, :] + sample_data[next_i, :]) / 2
-    #                 warped_data = warped_data.write(warped_data.size(), sample_data[i, :])
-    #                 warped_data = warped_data.write(warped_data.size(), interpolated_value)
-    #                 return warped_data
-    #
-    #             # No action: if warp_value == 0, keep the data as-is
-    #             def keep_step(warped_data):
-    #                 warped_data = warped_data.write(warped_data.size(), sample_data[i, :])
-    #                 return warped_data
-    #
-    #             # Choose action based on the warp_value using tf.cond
-    #             warped_data = tf.cond(
-    #                 warp_value == -1,
-    #                 lambda: compress_step(warped_data),
-    #                 lambda: tf.cond(warp_value == 1, lambda: stretch_step(warped_data), lambda: keep_step(warped_data))
-    #             )
-    #
-    #             return i + 1, warped_data
-    #
-    #         # Use tf.while_loop to iterate over time_steps
-    #         i = tf.constant(0)
-    #         _, warped_data = tf.while_loop(lambda i, _: i < time_steps, loop_body, [i, warped_data])
-    #
-    #         # Stack the warped_data TensorArray back into a tensor
-    #         warped_data = warped_data.stack()
-    #
-    #         # Resize only the time dimension (axis 0) to match the original time_steps using bilinear interpolation
-    #         warped_data_resized = tf.image.resize(tf.expand_dims(warped_data, axis=1), [time_steps, 1],
-    #                                               method="bilinear")
-    #
-    #         return tf.squeeze(warped_data_resized, axis=1)
-    #
-    #     # Apply the time warping to each sample in the batch
-    #     warped_batch = tf.map_fn(warp_single_sample, (data, random_warp), fn_output_signature=tf.float32)
-    #     warped_batch = tf.reshape(warped_batch, [batch_size, time_steps, channels])
-    #
-    #     return warped_batch
-
     def time_warping(self, data):
         """
         Apply time warping to the time-series data.
@@ -517,10 +422,10 @@ class Augmentation:
                 layers.Lambda(self.rotate_axis),
                 # layers.Lambda(self.blockout),
                 # layers.Lambda(self.crop_and_resize),
-                # layers.Lambda(self.magnitude_warping),
+                layers.Lambda(self.magnitude_warping),
                 # layers.Lambda(self.time_warping),
                 # layers.Lambda(self.random_smoothing),
-                # layers.Lambda(self.permute_segments),
+                layers.Lambda(self.permute_segments),
             ]
         )
 
@@ -616,66 +521,65 @@ class ContrastiveModel(keras.Model):
 
         self.temperature = temperature
         self.contrastive_augmenter = augmentation.get_augmenter()
+        self.classification_augmenter = augmentation.get_augmenter()
         self.encoder = embeddings_function(M)
 
         self.current_index = tf.Variable(0, trainable=False, dtype=tf.int32)
-        self.similarity_values = tf.Variable(tf.zeros((600, 2)), trainable=False)
+        self.similarity_values = tf.Variable(tf.zeros((int((unlabeled_dataset_size / batch_size) * num_epochs), 2)),
+                                             trainable=False)
 
         # Non-linear MLP as projection head
         self.projection_head = keras.Sequential(
             [
                 keras.Input(shape=(M,)),
-                layers.Dense(64, activation="linear"),
+                layers.Dense(2 * M, activation="relu"),
+                # layers.BatchNormalization(scale=False, center=False, momentum=0.99, epsilon=1e-3),
                 # layers.BatchNormalization(),
-                layers.Dropout(0.2),
-                layers.Dense(32, activation="linear"),
-                # layers.Dropout(0.2),
-                layers.Dense(32),  # Keep this linear layer at the end for better contrastive loss
+                # layers.Dropout(0.05),
+                layers.Dense(M, activation="relu", kernel_regularizer=keras.regularizers.L2(0.5)),
+                # layers.BatchNormalization(),
+                # layers.Dropout(0.05),
+                layers.Dense(M),  # Keep this linear layer at the end for better contrastive loss
             ],
             name="projection_head",
         )
 
-        # self.projection_head = keras.Sequential(
-        #     [
-        #         keras.Input(shape=(M, 1)),  # Assuming M is the feature dimension
-        #
-        #         # 1D Convolution to capture temporal dependencies
-        #         layers.Conv1D(64, kernel_size=3, strides=1, padding="same", activation="linear"),
-        #         # layers.BatchNormalization(),
-        #         layers.Dropout(0.2),
-        #
-        #         # Another convolutional layer for deeper feature extraction
-        #         layers.Conv1D(32, kernel_size=3, strides=1, padding="same", activation="linear"),
-        #         # layers.BatchNormalization(),
-        #
-        #         # Global average pooling to reduce dimensionality
-        #         layers.GlobalAveragePooling1D(),
-        #
-        #         # Dense layer to output final embeddings
-        #         layers.Dense(32, activation="linear"),
-        #         layers.Dense(32),  # Keep this linear layer at the end for contrastive loss
-        #     ],
-        #     name="projection_head",
-        # )
+        # Single dense layer for linear probing
+        self.linear_probe = keras.Sequential(
+            [
+                layers.Input(shape=(M,)),
+                layers.Dense(2),
+            ],
+            name="linear_probe",
+        )
 
         self.encoder.summary()
         self.projection_head.summary()
+        self.linear_probe.summary()
 
-    def compile(self, contrastive_optimizer, **kwargs):
+    def compile(self, contrastive_optimizer, probe_optimizer, **kwargs):
         super().compile(**kwargs)
 
         self.contrastive_optimizer = contrastive_optimizer
+        self.probe_optimizer = probe_optimizer
+
+        self.probe_loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 
         self.contrastive_loss_tracker = keras.metrics.Mean(name="c_loss")
         self.contrastive_accuracy = keras.metrics.SparseCategoricalAccuracy(
             name="c_acc"
         )
 
+        self.probe_loss_tracker = keras.metrics.Mean(name="p_loss")
+        self.probe_accuracy = keras.metrics.SparseCategoricalAccuracy(name="p_acc")
+
     @property
     def metrics(self):
         return [
             self.contrastive_loss_tracker,
-            self.contrastive_accuracy
+            self.contrastive_accuracy,
+            self.probe_loss_tracker,
+            self.probe_accuracy
         ]
 
     def contrastive_loss_with_regularization(self, projections_1, projections_2, regularization_weight=0.0):
@@ -778,11 +682,17 @@ class ContrastiveModel(keras.Model):
 
         return tf.reduce_mean(positive_similarities), tf.reduce_mean(negative_similarities)
 
-
     def train_step(self, data):
+        unlabeled_data = data[0]
+        labeled_data = data[1][0]
+        labels = data[1][1]
+
+        # print("Unlabeled data shape: ", unlabeled_data)
+        # print("Labeled data shape: ", labeled_data)
+        # print("Labels shape: ", labels)
         # Each window is augmented twice, differently
-        augmented_data_1 = self.contrastive_augmenter(data, training=True)
-        augmented_data_2 = self.contrastive_augmenter(data, training=True)
+        augmented_data_1 = self.contrastive_augmenter(unlabeled_data, training=True)
+        augmented_data_2 = self.contrastive_augmenter(unlabeled_data, training=True)
 
         with tf.GradientTape() as tape:
             # Pass both augmented versions of the images through the encoder
@@ -790,66 +700,105 @@ class ContrastiveModel(keras.Model):
             features_2 = self.encoder(augmented_data_2, training=True)
 
             # The representations are passed through a projection MLP
-            projections_1 = self.projection_head(features_1, training=True)
-            projections_2 = self.projection_head(features_2, training=True)
+            # projections_1 = self.projection_head(features_1, training=True)
+            # projections_2 = self.projection_head(features_2, training=True)
 
             # Compute the contrastive loss
-            contrastive_loss = self.contrastive_loss_with_regularization(projections_1, projections_2)
+            contrastive_loss = self.contrastive_loss_with_regularization(features_1, features_2)
 
-            # SIMILARITY METRICS
-            positive_sim, negative_sim = self.compute_similarity_metrics(projections_1, projections_2)
-            new_values = tf.stack([positive_sim, negative_sim])
-            self.similarity_values[self.current_index].assign(new_values)
-            self.current_index.assign_add(1)
+            # # SIMILARITY METRICS
+            # positive_sim, negative_sim = self.compute_similarity_metrics(projections_1, projections_2)
+            # new_values = tf.stack([positive_sim, negative_sim])
+            # self.similarity_values[self.current_index].assign(new_values)
+            # self.current_index.assign_add(1)
 
         # Compute gradients of the contrastive loss and update the encoder and projection head
         gradients = tape.gradient(
             contrastive_loss,
-            self.encoder.trainable_weights + self.projection_head.trainable_weights,
+            self.encoder.trainable_weights,
         )
         self.contrastive_optimizer.apply_gradients(
             zip(
                 gradients,
-                self.encoder.trainable_weights + self.projection_head.trainable_weights,
+                self.encoder.trainable_weights,
             )
         )
 
         # Update the contrastive loss tracker for monitoring
         self.contrastive_loss_tracker.update_state(contrastive_loss)
 
+        # Labels are only used in evalutation for an on-the-fly logistic regression
+        preprocessed_data = self.classification_augmenter(labeled_data, training=True)
+
+        with tf.GradientTape() as tape:
+            # the encoder is used in inference mode here to avoid regularization
+            # and updating the batch normalization paramers if they are used
+            features = self.encoder(preprocessed_data, training=True)
+            class_logits = self.linear_probe(features, training=True)
+            probe_loss = self.probe_loss(labels, class_logits)
+
+        gradients = tape.gradient(probe_loss, self.linear_probe.trainable_weights)
+
+        self.probe_optimizer.apply_gradients(
+            zip(gradients, self.linear_probe.trainable_weights)
+        )
+
+        self.probe_loss_tracker.update_state(probe_loss)
+        self.probe_accuracy.update_state(labels, class_logits)
+
         return {m.name: m.result() for m in self.metrics}
 
-    # def test_step(self, data):
-    #
-    #     # Augment the windows twice for contrastive testing
-    #     augmented_data_1 = self.contrastive_augmenter(data, training=False)
-    #     augmented_data_2 = self.contrastive_augmenter(data, training=False)
-    #
-    #     # Extract features from both augmented views using the encoder
-    #     features_1 = self.encoder(augmented_data_1, training=False)
-    #     features_2 = self.encoder(augmented_data_2, training=False)
-    #
-    #     # Pass the features through the projection head
-    #     projections_1 = self.projection_head(features_1, training=False)
-    #     projections_2 = self.projection_head(features_2, training=False)
-    #
-    #     # Calculate contrastive loss (during testing, we don't apply gradients)
-    #     contrastive_loss = self.contrastive_loss(projections_1, projections_2)
-    #     self.contrastive_loss_tracker.update_state(contrastive_loss)
-    #
-    #     # Return only contrastive loss tracker for evaluation
-    #     return {m.name: m.result() for m in self.metrics}
+    def test_step(self, data):
+        labeled_data, labels = data
+
+        # For testing the components are used with a training=False flag
+        preprocessed_data = self.classification_augmenter(
+            labeled_data, training=False
+        )
+        features = self.encoder(preprocessed_data, training=False)
+        class_logits = self.linear_probe(features, training=False)
+        probe_loss = self.probe_loss(labels, class_logits)
+        self.probe_loss_tracker.update_state(probe_loss)
+        self.probe_accuracy.update_state(labels, class_logits)
+
+        # Only the probe metrics are logged at test time
+        return {m.name: m.result() for m in self.metrics[2:]}
+
+    def plot_contrastive_loss(self, pretraining_history):
+        """
+        Plots contrastive loss per epoch.
+        """
+        plt.figure(figsize=(6, 5))
+        plt.plot(pretraining_history.history["c_loss"], label="Contrastive Loss", color='blue')
+        plt.title("Contrastive Loss per Epoch")
+        plt.xlabel("Epochs")
+        plt.ylabel("Loss")
+        plt.legend()
+        plt.show()
+
+    def plot_validation_accuracy(self, pretraining_history):
+        """
+        Plots validation accuracy per epoch.
+        """
+        plt.figure(figsize=(6, 5))
+        plt.plot(pretraining_history.history["val_p_acc"], label="Linear Probing Accuracy", color='orange')
+        plt.title("Linear Probing Accuracy per Epoch")
+        plt.xlabel("Epochs")
+        plt.ylabel("Accuracy")
+        plt.legend()
+        plt.show()
 
 
 # Contrastive pretraining
 pretraining_model = ContrastiveModel()
 pretraining_model.compile(
-    contrastive_optimizer=keras.optimizers.Adam(learning_rate=1e-3)
+    contrastive_optimizer=keras.optimizers.Adam(learning_rate=1e-3),
+    probe_optimizer=keras.optimizers.Adam(learning_rate=1e-3)
 )
 
 early_stopping = callbacks.EarlyStopping(
-    monitor="c_loss",
-    patience=10,
+    monitor="val_p_loss",
+    patience=30,
     mode="min",
     verbose=1,
     start_from_epoch=0,
@@ -857,7 +806,8 @@ early_stopping = callbacks.EarlyStopping(
 )
 
 pretraining_history = pretraining_model.fit(
-    gdataset, epochs=num_epochs, batch_size=batch_size, callbacks=[early_stopping]
+    train_dataset, epochs=num_epochs, validation_data=labeled_gdataset, batch_size=batch_size,
+    callbacks=[early_stopping]
 )
 
 print(
@@ -872,19 +822,44 @@ print(
     )
 )
 
-for pos_sim, neg_sim in pretraining_model.similarity_values:
-    print("Positive similarity: {:.2f}, Negative similarity: {:.2f}".format(pos_sim, neg_sim))
+# for pos_sim, neg_sim in pretraining_model.similarity_values:
+#     print("Positive similarity: {:.2f}, Negative similarity: {:.2f}".format(pos_sim, neg_sim))
 
 pretraining_model.get_layer("embeddings_function").save_weights("embeddings.weights.h5")
 
-embeddings = pretraining_model.get_layer("embeddings_function").predict(gdataset)
+# pretraining_model.get_layer("embeddings_function").load_weights("embeddings.weights.h5")
 
-print("Embeddings shape: {}".format(embeddings.shape))
+pretraining_model.plot_contrastive_loss(pretraining_history)
+pretraining_model.plot_validation_accuracy(pretraining_history)
+
+def get_labeled_embeddings(pretraining_model, labeled_gdataset):
+    windows = []
+    labels = []
+
+    # Iterate through the batched dataset and collect windows and labels
+    for batch in labeled_gdataset:
+        windows_batch = batch[0]  # Extract the windows from the batch
+        labels_batch = batch[1]  # Extract the labels from the batch
+
+        # Predict the embeddings for the entire batch of windows
+        embeddings_batch = pretraining_model.get_layer("embeddings_function").predict(windows_batch)
+
+        # Append the embeddings and labels to the lists
+        windows.append(embeddings_batch)
+        labels.append(labels_batch.numpy())  # Convert TensorFlow tensor to numpy array
+
+    # Stack the results to form a full matrix
+    embeddings = np.vstack(windows)  # Convert list of arrays into a full array
+    labels = np.hstack(labels)  # Flatten list of label arrays into a single array
+
+    print("Embeddings shape: {}".format(embeddings.shape))
+    return embeddings, labels
 
 
-def visualize_embeddings(embeddings, n_components=2, perplexity=50, learning_rate=1000, n_iter=500):
+# Function to visualize the embeddings
+def visualize_embeddings(embeddings, labels, n_components=2, perplexity=5, learning_rate="auto", n_iter=500):
     """
-    Visualize the embeddings using t-SNE.
+    Visualize the embeddings using t-SNE, colored by their class labels.
     """
     # Initialize t-SNE model
     tsne = TSNE(n_components=n_components, perplexity=perplexity, learning_rate=learning_rate, n_iter=n_iter,
@@ -896,27 +871,37 @@ def visualize_embeddings(embeddings, n_components=2, perplexity=50, learning_rat
     # 2D Visualization
     if n_components == 2:
         plt.figure(figsize=(10, 8))
-        plt.scatter(reduced_embeddings[:, 0], reduced_embeddings[:, 1])
+        plt.scatter(reduced_embeddings[labels == 0, 0], reduced_embeddings[labels == 0, 1], label="No tremor", c='b',
+                    alpha=0.5)
+        plt.scatter(reduced_embeddings[labels == 1, 0], reduced_embeddings[labels == 1, 1], label="Tremor", c='r',
+                    alpha=0.5)
         plt.title("2D t-SNE Visualization of Embeddings")
         plt.xlabel("t-SNE Dimension 1")
         plt.ylabel("t-SNE Dimension 2")
+        plt.legend()
         plt.show()
 
     # 3D Visualization
     elif n_components == 3:
         fig = plt.figure(figsize=(10, 8))
         ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(reduced_embeddings[:, 0], reduced_embeddings[:, 1], reduced_embeddings[:, 2])
+        ax.scatter(reduced_embeddings[labels == 0, 0], reduced_embeddings[labels == 0, 1],
+                   reduced_embeddings[labels == 0, 2], label="Class 0", c='b', alpha=0.5)
+        ax.scatter(reduced_embeddings[labels == 1, 0], reduced_embeddings[labels == 1, 1],
+                   reduced_embeddings[labels == 1, 2], label="Class 1", c='r', alpha=0.5)
         ax.set_title("3D t-SNE Visualization of Embeddings")
         ax.set_xlabel("t-SNE Dimension 1")
         ax.set_ylabel("t-SNE Dimension 2")
         ax.set_zlabel("t-SNE Dimension 3")
+        ax.legend()
         plt.show()
     else:
         raise ValueError("n_components must be 2 or 3 for visualization.")
 
 
-visualize_embeddings(embeddings)
+# Use the function to get embeddings and visualize them
+embeddings, labels = get_labeled_embeddings(pretraining_model, labeled_gdataset)
+visualize_embeddings(embeddings, labels, n_components=2)
 
 print(time.time() - start)
 

@@ -2,6 +2,7 @@ import numpy as np
 import psutil
 
 from utils import *
+from visualization import *
 import os
 import time
 import gc
@@ -262,7 +263,7 @@ def lr_schedule(epoch, lr):
     total_epochs = 50
     decay_start_epoch = total_epochs // 2  # Start decay at the halfway point of the training
     if epoch >= decay_start_epoch:
-        return lr * 0.9  # Decay the learning rate by a factor of 0.9
+        return lr * 0.90  # Decay the learning rate by a factor of 0.9
     return lr
 
 
@@ -270,6 +271,16 @@ def train(train_dataset, val_dataset, model):
     # Train model.
     # Prepare callbacks.
     # Path where to save best weights.
+
+    # Finetune
+    try:
+        model.get_layer("embeddings_function").load_weights("evenbettser.weights.h5")
+        # model.get_layer("embeddings_function").trainable = False
+        print("Successfully loaded SimCLR weights into encoder.")
+    except Exception as e:
+        print(f"Failed to load SimCLR weights: {e}")
+
+    # print(model.get_layer("embeddings_function").summary())
 
     # Take the file name from the wrapper.
     file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../best_model.weights.h5")
@@ -300,13 +311,9 @@ def train(train_dataset, val_dataset, model):
     clear_memory = ClearMemory()
     lr_scheduler = callbacks.LearningRateScheduler(lr_schedule)
 
-    # Finetune
-    model.get_layer("embeddings_function").load_weights("embeddings.weights.h5")
-
     # Compile model.
     model.compile(
-        optimizer="adam",
-        # optimizer=optimizers.Adam(learning_rate=1e-3),
+        optimizer=optimizers.Adam(learning_rate=1e-3),
         loss="sparse_categorical_crossentropy",
         metrics=["accuracy"],
         auto_scale_loss=True
@@ -335,9 +342,12 @@ sdata_path = os.path.join('..', 'data', 'tremor_sdata.pickle')
 tremor_sdata = unpickle_data(sdata_path)
 
 E_thres = 0.15
-Kt = 1500
+Kt = 100
 # {'updrs16', 'updrs20', 'updrs21', 'tremor_manual'}
 sdataset = form_dataset(tremor_sdata, E_thres, Kt, 'tremor_manual', 'tremor_manual')
+
+# with open("sdataset.pickle", 'rb') as f:
+#     sdataset = pkl.load(f)
 
 print(sdataset)
 
@@ -453,14 +463,21 @@ def rkf_evaluate(data, k, n_repeats):
     y_test = data['y_test'].tolist()
 
     # Initialize RepeatedKFold
-    rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats)
+    rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats, random_state=42)
     overall_accuracies = []
     overall_sensitivities = []
     overall_specificities = []
     overall_precisions = []
     overall_f1_scores = []
 
-    for train_index, test_index in rkf.split(bags):
+    all_true_labels = []
+    all_predicted_labels = []
+    all_predicted_probs = []
+
+    for idx, (train_index, test_index) in enumerate(rkf.split(bags), 1):
+
+        print(f"\033[91mIteration {idx}/{k * n_repeats}\033[0m")
+
         # Split the data into training and validation sets
         train_bags = [bags[i] for i in train_index]
         train_labels = [y_train[i] for i in train_index]
@@ -476,7 +493,7 @@ def rkf_evaluate(data, k, n_repeats):
         print_memory_usage()
 
         train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
-        train_dataset = train_dataset.shuffle(buffer_size=10*len(train_data)).batch(1).prefetch(
+        train_dataset = train_dataset.shuffle(buffer_size=10*len(train_data), seed=42).batch(1).prefetch(
             buffer_size=tf.data.AUTOTUNE)
         val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
         val_dataset = val_dataset.batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
@@ -494,6 +511,12 @@ def rkf_evaluate(data, k, n_repeats):
         # Compute confusion matrix
         predicted_labels = np.argmax(class_predictions, axis=1).flatten()
         true_labels = val_labels.flatten()
+
+        # Store true and predicted labels for plotting later
+        all_true_labels.extend(true_labels)
+        all_predicted_labels.extend(predicted_labels)
+        predicted_probs = class_predictions[:, 1].flatten()
+        all_predicted_probs.extend(predicted_probs)
 
         print("predicted_labels:", predicted_labels)
         print("true_labels:", true_labels)
@@ -531,11 +554,26 @@ def rkf_evaluate(data, k, n_repeats):
     print(f"Final average precision across all subjects: {final_precision * 100:.2f}%")
     print(f"Final average F1-score across all subjects: {final_f1_score * 100:.2f}%")
 
-    return
+    # Convert lists to arrays for plotting
+    all_true_labels = np.array(all_true_labels)
+    all_predicted_probs = np.array(all_predicted_probs)
+    all_predicted_labels = np.array(all_predicted_labels)
+    valid_indices = ~np.isnan(all_true_labels) & ~np.isnan(all_predicted_probs)
+    all_true_labels = all_true_labels[valid_indices]
+    all_predicted_probs = all_predicted_probs[valid_indices]
+    all_predicted_labels = all_predicted_labels[valid_indices]
+
+    return all_true_labels, all_predicted_probs, all_predicted_labels
 
 
 # loso_evaluate(sdataset)
-rkf_evaluate(sdataset, k=5, n_repeats=6)
+true_labels, predicted_probs, predicted_labels = rkf_evaluate(sdataset, k=5, n_repeats=4)
+
+# np.savez("roc_curve_pretraining.npz", true_labels=true_labels, predicted_probs=predicted_probs)
+# np.savez("roc_curve_no_pretraining.npz", true_labels=true_labels, predicted_probs=predicted_probs)
+
+plot_roc_curve(true_labels, predicted_probs)
+plot_confusion_matrix(true_labels, predicted_labels)
 
 print(time.time() - start)
 
