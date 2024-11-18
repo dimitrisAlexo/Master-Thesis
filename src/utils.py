@@ -105,6 +105,11 @@ def filter_data(subject, E_thres, Kt):
     if len(bag) < min(30, Kt):
         return None
 
+    # if len(bag) < Kt:
+    #     # Repeat the content of the bag until its length is exactly Kt
+    #     repeats = (Kt // len(bag)) + 1
+    #     bag = (bag * repeats)[:Kt]
+
     return np.array(bag)
 
 

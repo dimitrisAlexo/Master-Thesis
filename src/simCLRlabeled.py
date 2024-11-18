@@ -54,7 +54,7 @@ print("Using mixed precision...")
 ## Hyperparameter setup
 """
 
-unlabeled_dataset_size = 30000
+unlabeled_dataset_size = 10000
 labeled_dataset_size = 100
 
 M = 64
@@ -62,7 +62,7 @@ E_thres = 0.15
 Kt = 100
 batch_size = 100
 num_epochs = 50
-temperature = 0.05
+temperature = 0.1
 
 """
 ## Dataset
@@ -95,7 +95,7 @@ labeled_gdataset['X'] = labeled_gdataset['X'].apply(lambda window: normalize_win
 print(labeled_gdataset)
 
 labeled_gdataset = tf.data.Dataset.from_tensor_slices((list(labeled_gdataset['X']), list(labeled_gdataset['y'])))
-labeled_gdataset = labeled_gdataset.shuffle(buffer_size=len(labeled_gdataset), seed=42).batch(5).prefetch(
+labeled_gdataset = labeled_gdataset.shuffle(buffer_size=len(labeled_gdataset), seed=42).batch(1).prefetch(
     buffer_size=tf.data.AUTOTUNE)
 
 print(labeled_gdataset.element_spec)
@@ -110,12 +110,16 @@ train_dataset = tf.data.Dataset.zip(
 
 
 class Augmentation:
-    def __init__(self, jitter_factor=0.1, rotation_angle=np.pi, block_size_ratio=0.1, crop_ratio=0.1,
+    def __init__(self, jitter_factor=0.1, rotation_angle=np.pi, gravity_factor=0.1, sliding_factor=0.15,
+                 block_size_ratio=0.1,
+                 crop_ratio=0.1,
                  lambda_amp=0.5,
-                 n_perm_seg=4, min_seg_size=125):
+                 n_perm_seg=10, min_seg_size=125):
         # Set default parameters for each augmentation
         self.jitter_factor = jitter_factor
         self.rotation_angle = rotation_angle
+        self.gravity_factor = gravity_factor
+        self.sliding_factor = sliding_factor
         self.block_size_ratio = block_size_ratio
         self.crop_ratio = crop_ratio
         self.lambda_amp = lambda_amp
@@ -202,6 +206,52 @@ class Augmentation:
         rotated_batch = tf.map_fn(rotate_single_sample, data)
 
         return rotated_batch
+
+    def add_gravity(self, data):
+        """
+        Adds a random gravity component to the 3D accelerometer data.
+        """
+
+        def add_gravity_to_sample(sample):
+            # Generate a random direction vector (normalized) for gravity
+            gravity_direction = tf.random.uniform([3], minval=-1.0, maxval=1.0)
+            gravity_direction = gravity_direction / tf.norm(gravity_direction)
+
+            # Calculate the gravity vector with the specified magnitude
+            gravity_magnitude = self.gravity_factor * 10.0  # assuming g = 10 m/s^2
+            gravity_vector = gravity_magnitude * gravity_direction
+
+            # Add the gravity vector to each time step of the sample
+            return sample + gravity_vector
+
+        # Apply the add_gravity_to_sample function to each sample in the batch using tf.map_fn
+        gravity_augmented_batch = tf.map_fn(add_gravity_to_sample, data)
+
+        return gravity_augmented_batch
+
+    def slide_window(self, data):
+        """
+        Randomly slides the values of the window left or right.
+        Values that do not fit are wrapped around to the other side.
+        """
+        window_length = tf.shape(data)[1]
+
+        def slide_single_sample(sample):
+            # Calculate the maximum number of positions to slide based on sliding_factor
+            max_slide = tf.cast(tf.round(self.sliding_factor * tf.cast(window_length, tf.float32)), tf.int32)
+
+            # Generate a random sliding factor between -max_slide and +max_slide
+            slide = tf.random.uniform([], minval=-max_slide, maxval=max_slide + 1, dtype=tf.int32)
+
+            # Use tf.roll to shift the window with wrapping
+            slid_sample = tf.roll(sample, shift=slide, axis=0)
+
+            return slid_sample
+
+        # Apply the slide_single_sample function to each sample in the batch using tf.map_fn
+        slid_batch = tf.map_fn(slide_single_sample, data)
+
+        return slid_batch
 
     def blockout(self, data):
         """
@@ -420,9 +470,11 @@ class Augmentation:
                 # layers.Lambda(self.bidirectional_flipping),
                 # layers.Lambda(self.random_channel_permutation),
                 layers.Lambda(self.rotate_axis),
+                layers.Lambda(self.add_gravity),
+                layers.Lambda(self.slide_window),
                 # layers.Lambda(self.blockout),
                 # layers.Lambda(self.crop_and_resize),
-                layers.Lambda(self.magnitude_warping),
+                # layers.Lambda(self.magnitude_warping),
                 # layers.Lambda(self.time_warping),
                 # layers.Lambda(self.random_smoothing),
                 layers.Lambda(self.permute_segments),
@@ -466,7 +518,7 @@ def visualize_augmentations(gdataset, augmentation, num_windows):
 
 
 augmentation = Augmentation()
-# visualize_augmentations(gdataset, augmentation, num_windows=3)
+visualize_augmentations(gdataset, augmentation, num_windows=3)
 
 """
 ## Encoder architecture
@@ -525,7 +577,7 @@ class ContrastiveModel(keras.Model):
         self.encoder = embeddings_function(M)
 
         self.current_index = tf.Variable(0, trainable=False, dtype=tf.int32)
-        self.similarity_values = tf.Variable(tf.zeros((int((unlabeled_dataset_size / batch_size) * num_epochs), 2)),
+        self.similarity_values = tf.Variable(tf.zeros((1000, 2)),
                                              trainable=False)
 
         # Non-linear MLP as projection head
@@ -707,7 +759,8 @@ class ContrastiveModel(keras.Model):
             contrastive_loss = self.contrastive_loss_with_regularization(features_1, features_2)
 
             # # SIMILARITY METRICS
-            # positive_sim, negative_sim = self.compute_similarity_metrics(projections_1, projections_2)
+            # tf.print("Current index: ", self.current_index)
+            # positive_sim, negative_sim = self.compute_similarity_metrics(features_1, features_2)
             # new_values = tf.stack([positive_sim, negative_sim])
             # self.similarity_values[self.current_index].assign(new_values)
             # self.current_index.assign_add(1)
@@ -805,9 +858,20 @@ early_stopping = callbacks.EarlyStopping(
     restore_best_weights=True
 )
 
+
+def lr_schedule(epoch, lr):
+    total_epochs = 50
+    decay_start_epoch = total_epochs // 2  # Start decay at the halfway point of the training
+    if epoch >= decay_start_epoch:
+        return lr * 1.00  # Decay the learning rate by a factor of 0.9
+    return lr
+
+
+lr_scheduler = callbacks.LearningRateScheduler(lr_schedule)
+
 pretraining_history = pretraining_model.fit(
     train_dataset, epochs=num_epochs, validation_data=labeled_gdataset, batch_size=batch_size,
-    callbacks=[early_stopping]
+    callbacks=[early_stopping, lr_scheduler]
 )
 
 print(
@@ -831,6 +895,7 @@ pretraining_model.get_layer("embeddings_function").save_weights("embeddings.weig
 
 pretraining_model.plot_contrastive_loss(pretraining_history)
 pretraining_model.plot_validation_accuracy(pretraining_history)
+
 
 def get_labeled_embeddings(pretraining_model, labeled_gdataset):
     windows = []

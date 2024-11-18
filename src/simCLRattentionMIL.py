@@ -247,7 +247,17 @@ def create_model(input_shape):
     # Classification output node.
     output = final_classifier(z)
 
-    return keras.Model(model_input, output)
+    model = keras.Model(model_input, output)
+
+    # Finetune
+    try:
+        model.get_layer("embeddings_function").load_weights("embeddings.weights.h5")
+        model.get_layer("embeddings_function").trainable = False
+        print("Successfully loaded SimCLR weights into encoder.")
+    except Exception as e:
+        print(f"Failed to load SimCLR weights: {e}")
+
+    return model
 
 
 class ClearMemory(callbacks.Callback):
@@ -271,14 +281,6 @@ def train(train_dataset, val_dataset, model):
     # Train model.
     # Prepare callbacks.
     # Path where to save best weights.
-
-    # Finetune
-    try:
-        model.get_layer("embeddings_function").load_weights("evenbettser.weights.h5")
-        # model.get_layer("embeddings_function").trainable = False
-        print("Successfully loaded SimCLR weights into encoder.")
-    except Exception as e:
-        print(f"Failed to load SimCLR weights: {e}")
 
     # print(model.get_layer("embeddings_function").summary())
 
@@ -322,7 +324,7 @@ def train(train_dataset, val_dataset, model):
     # Fit model.
     model.fit(
         train_dataset,
-        validation_data=train_dataset,
+        validation_data=val_dataset,
         epochs=50,
         batch_size=8,
         callbacks=[model_checkpoint, lr_scheduler, clear_memory],
@@ -501,7 +503,7 @@ def rkf_evaluate(data, k, n_repeats):
         current_model = create_model(input_shape)
 
         # Train the models on the training data
-        trained_model = train(train_dataset, val_dataset, current_model)
+        trained_model = train(train_dataset, train_dataset, current_model)
 
         # Evaluate the model on the validation data
         class_predictions, attention_params = predict(val_dataset, trained_model)
@@ -566,8 +568,137 @@ def rkf_evaluate(data, k, n_repeats):
     return all_true_labels, all_predicted_probs, all_predicted_labels
 
 
+def rkf_evaluate_with_validation(data, k, n_repeats):
+    # Extract the bags and labels
+    bags = data['X'].tolist()
+    y_train = data['y_train'].tolist()
+
+    # Initialize RepeatedKFold
+    rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats, random_state=42)
+    overall_accuracies = []
+    overall_sensitivities = []
+    overall_specificities = []
+    overall_precisions = []
+    overall_f1_scores = []
+
+    all_true_labels = []
+    all_predicted_labels = []
+    all_predicted_probs = []
+
+    for idx, (train_val_index, test_index) in enumerate(rkf.split(bags), 1):
+
+        print(f"\033[91mIteration {idx}/{k * n_repeats}\033[0m")
+
+        # Split the data into train+val and test sets
+        train_val_bags = [bags[i] for i in train_val_index]
+        train_val_labels = [y_train[i] for i in train_val_index]
+        test_bags = [bags[i] for i in test_index]
+        test_labels = [y_train[i] for i in test_index]
+
+        # Further split train_val into train and val
+        rkf_inner = RepeatedKFold(n_splits=k-1, n_repeats=1, random_state=42)
+        train_index, val_index = next(rkf_inner.split(train_val_bags))
+
+        # Prepare the training, validation, and testing datasets
+        train_bags = [train_val_bags[i] for i in train_index]
+        train_labels = [train_val_labels[i] for i in train_index]
+        val_bags = [train_val_bags[i] for i in val_index]
+        val_labels = [train_val_labels[i] for i in val_index]
+
+        # Convert all sets to numpy arrays
+        train_data = np.array(train_bags)
+        train_labels = np.array([np.array([label]) for label in train_labels])
+
+        val_data = np.array(val_bags)
+        val_labels = np.array([np.array([label]) for label in val_labels])
+
+        test_data = np.array(test_bags)
+        test_labels = np.array([np.array([label]) for label in test_labels])
+
+        print_memory_usage()
+
+        # Create TensorFlow datasets
+        train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
+        train_dataset = train_dataset.shuffle(buffer_size=10*len(train_data), seed=42).batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
+
+        val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
+        val_dataset = val_dataset.batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
+
+        test_dataset = tf.data.Dataset.from_tensor_slices((test_data, test_labels))
+        test_dataset = test_dataset.batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
+
+        # Create the model
+        current_model = create_model(input_shape)
+
+        # Train the model on the training and validation data
+        trained_model = train(train_dataset, val_dataset, current_model)
+
+        # Evaluate the model on the test data
+        class_predictions, attention_params = predict(test_dataset, trained_model)
+
+        del trained_model
+
+        # Compute confusion matrix
+        predicted_labels = np.argmax(class_predictions, axis=1).flatten()
+        true_labels = test_labels.flatten()
+
+        # Store true and predicted labels for plotting later
+        all_true_labels.extend(true_labels)
+        all_predicted_labels.extend(predicted_labels)
+        predicted_probs = class_predictions[:, 1].flatten()
+        all_predicted_probs.extend(predicted_probs)
+
+        print("predicted_labels:", predicted_labels)
+        print("true_labels:", true_labels)
+
+        tn, fp, fn, tp = confusion_matrix(true_labels, predicted_labels).ravel()
+        print("tn:", tn)
+        print("fp:", fp)
+        print("fn:", fn)
+        print("tp:", tp)
+
+        # Calculate metrics
+        accuracy, sensitivity, specificity, precision, f1_score = calculate_metrics(tn, fp, fn, tp)
+
+        print("accuracy:", accuracy)
+        print("sensitivity:", sensitivity)
+        print("specificity:", specificity)
+        print("precision:", precision)
+        print("f1_score:", f1_score)
+
+        overall_accuracies.append(accuracy)
+        overall_sensitivities.append(sensitivity)
+        overall_specificities.append(specificity)
+        overall_precisions.append(precision)
+        overall_f1_scores.append(f1_score)
+
+    # Calculate the final accuracy across all folds and repetitions
+    final_accuracy = np.nanmean(overall_accuracies)
+    final_sensitivity = np.nanmean(overall_sensitivities)
+    final_specificity = np.nanmean(overall_specificities)
+    final_precision = np.nanmean(overall_precisions)
+    final_f1_score = np.nanmean(overall_f1_scores)
+    print(f"Final average accuracy across all subjects: {final_accuracy * 100:.2f}%")
+    print(f"Final average sensitivity across all subjects: {final_sensitivity * 100:.2f}%")
+    print(f"Final average specificity across all subjects: {final_specificity * 100:.2f}%")
+    print(f"Final average precision across all subjects: {final_precision * 100:.2f}%")
+    print(f"Final average F1-score across all subjects: {final_f1_score * 100:.2f}%")
+
+    # Convert lists to arrays for plotting
+    all_true_labels = np.array(all_true_labels)
+    all_predicted_probs = np.array(all_predicted_probs)
+    all_predicted_labels = np.array(all_predicted_labels)
+    valid_indices = ~np.isnan(all_true_labels) & ~np.isnan(all_predicted_probs)
+    all_true_labels = all_true_labels[valid_indices]
+    all_predicted_probs = all_predicted_probs[valid_indices]
+    all_predicted_labels = all_predicted_labels[valid_indices]
+
+    return all_true_labels, all_predicted_probs, all_predicted_labels
+
+
 # loso_evaluate(sdataset)
 true_labels, predicted_probs, predicted_labels = rkf_evaluate(sdataset, k=5, n_repeats=4)
+# true_labels, predicted_probs, predicted_labels = rkf_evaluate_with_validation(sdataset, k=5, n_repeats=4)
 
 # np.savez("roc_curve_pretraining.npz", true_labels=true_labels, predicted_probs=predicted_probs)
 # np.savez("roc_curve_no_pretraining.npz", true_labels=true_labels, predicted_probs=predicted_probs)
