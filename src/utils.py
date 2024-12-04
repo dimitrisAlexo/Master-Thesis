@@ -1,4 +1,6 @@
 import pickle as pkl
+import time
+
 import scipy.signal
 import numpy as np
 import pandas as pd
@@ -8,7 +10,6 @@ from sklearn.metrics import roc_curve, auc, confusion_matrix
 
 
 def unpickle_data(filepath):
-
     with open(filepath, "rb") as f:
         data = pkl.load(f)
 
@@ -93,16 +94,39 @@ def form_dataset(tremor_data, E_thres, Kt, train_label_str, test_label_str):
     return df
 
 
+def plot_sample(sample):
+    plt.figure(figsize=(10, 4))
+    plt.plot(sample[:, 0], label='X-axis')
+    plt.plot(sample[:, 1], label='Y-axis')
+    plt.plot(sample[:, 2], label='Z-axis')
+    plt.xlabel('Time Steps')
+    plt.ylabel('Accelerometer Value')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+
 def filter_data(subject, E_thres, Kt):
     bag = []
     for session in subject[3]:
+        # print("Session init: ", np.shape(session))
+        # plot_sample(session[0])
+        # plot_sample(session[1])
+        # time.sleep(5)
+        num_pairs = session.shape[0] // 2
+        session = np.concatenate(
+            [session[2 * i:2 * i + 2].reshape(1, 1000, 3) for i in range(num_pairs)], axis=0
+        )
+        # print("Session end: ", np.shape(session))
+        # plot_sample(session[0])
+        # time.sleep(5)
         filtered_session = [segment for segment in session if calculate_energy(segment) > E_thres]
         if len(filtered_session) >= 2:
             bag.extend([segment for segment in filtered_session])
     bag.sort(key=lambda segment: calculate_energy(segment), reverse=True)
     bag = bag[:Kt]
 
-    if len(bag) < min(30, Kt):
+    if len(bag) < Kt:
         return None
 
     # if len(bag) < Kt:
@@ -114,7 +138,6 @@ def filter_data(subject, E_thres, Kt):
 
 
 def form_unlabeled_dataset(tremor_data, E_thres, Kt):
-
     data = []
     counter = 0
 
@@ -133,8 +156,8 @@ def form_unlabeled_dataset(tremor_data, E_thres, Kt):
     data = np.array(data)
 
     # Shuffle only the batches, i.e., along the first axis
-    indices = np.random.permutation(data.shape[0])
-    data = data[indices]
+    # indices = np.random.permutation(data.shape[0])
+    # data = data[indices]
 
     with open("unlabeled_data.pickle", 'wb') as f:
         pkl.dump(data, f)

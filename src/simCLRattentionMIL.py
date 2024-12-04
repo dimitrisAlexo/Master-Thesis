@@ -11,6 +11,7 @@ import resource
 
 import tensorflow as tf
 import keras
+
 from keras import layers
 from keras import ops
 from keras import callbacks
@@ -156,30 +157,69 @@ class MILAttentionLayer(layers.Layer):
         return ops.tensordot(instance, self.w_weight_params, axes=1)
 
 
+# def embeddings_function(M):
+#     return keras.Sequential(
+#         [
+#             # Layer 1
+#             layers.ZeroPadding1D(padding=1),
+#             layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
+#             layers.LeakyReLU(negative_slope=0.2),
+#             layers.MaxPooling1D(pool_size=2),
+#
+#             # Layer 2
+#             layers.ZeroPadding1D(padding=1),
+#             layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
+#             layers.LeakyReLU(negative_slope=0.2),
+#             layers.MaxPooling1D(pool_size=2),
+#
+#             # Layer 3
+#             layers.ZeroPadding1D(padding=1),
+#             layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
+#             layers.LeakyReLU(negative_slope=0.2),
+#             layers.MaxPooling1D(pool_size=2),
+#
+#             # Layer 4
+#             layers.ZeroPadding1D(padding=1),
+#             layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
+#             layers.LeakyReLU(negative_slope=0.2),
+#             layers.MaxPooling1D(pool_size=2),
+#
+#             # Flatten and Dense layer to get M-dimensional output
+#             layers.Flatten(),
+#             layers.Dense(M),
+#         ],
+#         name="embeddings_function",
+#     )
+
+
 def embeddings_function(M):
     return keras.Sequential(
         [
             # Layer 1
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
+            # layers.BatchNormalization(),
             layers.LeakyReLU(negative_slope=0.2),
             layers.MaxPooling1D(pool_size=2),
 
             # Layer 2
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
+            # layers.BatchNormalization(),
             layers.LeakyReLU(negative_slope=0.2),
             layers.MaxPooling1D(pool_size=2),
 
             # Layer 3
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
+            # layers.BatchNormalization(),
             layers.LeakyReLU(negative_slope=0.2),
             layers.MaxPooling1D(pool_size=2),
 
             # Layer 4
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
+            # layers.BatchNormalization(),
             layers.LeakyReLU(negative_slope=0.2),
             layers.MaxPooling1D(pool_size=2),
 
@@ -191,28 +231,56 @@ def embeddings_function(M):
     )
 
 
-def final_classifier(concat):
-    # Layer 1: Dense M → 32, Leaky-ReLU (α = 0.2), Dropout p = 0.2
-    dense_1 = layers.Dense(32)(concat)
-    leaky_relu_1 = layers.LeakyReLU(negative_slope=0.2)(dense_1)
-    dropout_1 = layers.Dropout(0.2)(leaky_relu_1)
+def final_classifier():
+    return keras.Sequential(
+        [
+            # Layer 1: Dense M → 32, Leaky-ReLU (α = 0.2), Dropout p = 0.2
+            layers.Dense(32, name="dense_1"),
+            layers.LeakyReLU(negative_slope=0.2, name="leaky_relu_1"),
+            layers.Dropout(0.2, name="dropout_1"),
 
-    # Layer 2: Dense 32 → 16, Leaky-ReLU (α = 0.2), Dropout p = 0.2
-    dense_2 = layers.Dense(16)(dropout_1)
-    leaky_relu_2 = layers.LeakyReLU(negative_slope=0.2)(dense_2)
-    dropout_2 = layers.Dropout(0.2)(leaky_relu_2)
+            # Layer 2: Dense 32 → 16, Leaky-ReLU (α = 0.2), Dropout p = 0.2
+            layers.Dense(16, name="dense_2"),
+            layers.LeakyReLU(negative_slope=0.2, name="leaky_relu_2"),
+            layers.Dropout(0.2, name="dropout_2"),
 
-    # Layer 3: Dense 16 → 2, 2-way softmax
-    output = layers.Dense(2, activation='softmax')(dropout_2)
+            # Layer 3: Dense 16 → 2, 2-way softmax
+            layers.Dense(2, activation='softmax', name="output")
+        ],
+        name="final_classifier",
+    )
 
-    return output
 
+class MILModel(keras.Model):
+    def __init__(self, input_shape, M, weight_params_dim=16, use_gated=False, **kwargs):
+        super(MILModel, self).__init__(**kwargs)
 
-def create_model(input_shape):
-    # Extract features from inputs.
-    model_input = layers.Input(shape=input_shape)
+        # Store parameters
+        self.M = M
+        self.Kt, self.Ws, self.C = input_shape
+        self.weight_params_dim = weight_params_dim
+        self.use_gated = use_gated
 
-    def create_mask_layer(inputs):
+        # Define model components
+        self.mask_layer = layers.Lambda(self.create_mask_layer, name="mask_layer")
+        self.reshape_to_embeddings = layers.Lambda(lambda x: tf.reshape(x, (-1, self.Ws, self.C)))
+        self.embeddings_function = embeddings_function(self.M)
+        self.reshape_to_attention = layers.Lambda(lambda x: tf.reshape(x, (-1, self.Kt, self.M)),
+                                                  name="reshape_attention")
+        self.attention_layer = MILAttentionLayer(
+            weight_params_dim=self.weight_params_dim,
+            kernel_regularizer=keras.regularizers.L2(0.01),
+            use_gated=self.use_gated,
+            name="alpha",
+        )
+        self.weighted_embeddings_layer = layers.Multiply(name="weighted_embeddings")
+        self.sum_layer = layers.Lambda(lambda x: tf.reduce_sum(x, axis=1), name="sum_layer")
+        self.classifier = final_classifier()
+
+        # Finetune
+        self.finetune()
+
+    def create_mask_layer(self, inputs):
         # Sum the features along the last two dimensions (500, 3)
         summed_features = tf.reduce_sum(inputs, axis=[2, 3], keepdims=True)
 
@@ -224,40 +292,58 @@ def create_model(input_shape):
 
         return mask
 
-    mask_layer = layers.Lambda(lambda x: create_mask_layer(x))(model_input)
+    def call(self, inputs):
+        # Forward pass through the model components
+        mask_layer = self.mask_layer(inputs)
+        embeddings = self.reshape_to_embeddings(inputs)
+        embeddings = self.embeddings_function(embeddings)
+        embeddings = self.reshape_to_attention(embeddings)
 
-    embeddings = layers.Lambda(lambda x: tf.reshape(x, (-1, Ws, C)))(model_input)
-    embeddings = embeddings_function(M)(embeddings)
-    embeddings = layers.Lambda(lambda x: tf.reshape(x, (-1, Kt, M)))(embeddings)
+        # Attention
+        alpha = self.attention_layer(embeddings, mask_layer)
 
-    # Invoke the attention layer.
-    alpha = MILAttentionLayer(
-        weight_params_dim=16,
-        kernel_regularizer=keras.regularizers.L2(0.01),
-        use_gated=False,
-        name="alpha",
-    )(embeddings, mask_layer)
+        # Weighted embeddings
+        weighted_embeddings = self.weighted_embeddings_layer([alpha, embeddings])
+        z = self.sum_layer(weighted_embeddings)
 
-    # Multiply attention weights with the input layers.
-    weighted_embeddings = layers.multiply([alpha, embeddings])
+        # Classification
+        output = self.classifier(z)
 
-    # Sum the weighted embeddings
-    z = layers.Lambda(lambda x: tf.reduce_sum(x, axis=1))(weighted_embeddings)
+        return output
 
-    # Classification output node.
-    output = final_classifier(z)
+    def finetune(self):
+        """Load pre-trained weights for the embeddings function."""
+        dummy_input = tf.random.normal((1, self.Ws, self.C))  # Create a dummy input to trigger build
+        _ = self.embeddings_function(dummy_input)  # Forward pass to build the layer
 
-    model = keras.Model(model_input, output)
+        try:
+            self.embeddings_function.load_weights("embeddings.weights.h5")
+            self.embeddings_function.trainable = True  # Set encoder trainable for fine-tuning
+            print("Successfully loaded SimCLR weights into encoder.")
+        except Exception as e:
+            print(f"Failed to load SimCLR weights: {e}")
 
-    # Finetune
-    try:
-        model.get_layer("embeddings_function").load_weights("embeddings.weights.h5")
-        model.get_layer("embeddings_function").trainable = False
-        print("Successfully loaded SimCLR weights into encoder.")
-    except Exception as e:
-        print(f"Failed to load SimCLR weights: {e}")
+    def train_step(self, data):
+        # Unpack data
+        x, y = data
 
-    return model
+        with tf.GradientTape() as tape:
+            # Forward pass
+            y_pred = self(x, training=True)
+            # Compute the loss using model.compute_loss
+            loss = self.compute_loss(x, y, y_pred)
+
+        # Compute gradients
+        gradients = tape.gradient(loss, self.trainable_variables)
+        # Apply gradients
+        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+
+        # Manually update metrics
+        for metric in self.metrics:
+            metric.update_state(y, y_pred)
+
+        # Return a dictionary mapping metric names to their current value
+        return {m.name: m.result() for m in self.metrics}
 
 
 class ClearMemory(callbacks.Callback):
@@ -358,7 +444,7 @@ Kt, Ws, C = np.array(sdataset['X'])[0].shape
 input_shape = (Kt, Ws, C)
 print(input_shape)
 M = 64
-model = create_model(input_shape)
+model = MILModel(input_shape=input_shape, M=M)
 
 # Show single model architecture.
 print(model.summary())
@@ -368,14 +454,6 @@ def predict(dataset, trained_model):
     # Predict output classes on data.
     predictions = trained_model.predict(dataset)
 
-    # Create intermediate model to get MIL attention layer weights.
-    intermediate_model = keras.Model(trained_model.input, trained_model.get_layer("alpha").output)
-
-    # Predict MIL attention layer weights.
-    intermediate_predictions = intermediate_model.predict(dataset)
-
-    attention_weights = np.squeeze(np.swapaxes(intermediate_predictions, 1, 0))
-
     loss, accuracy = trained_model.evaluate(dataset, verbose=0)
 
     print(
@@ -383,7 +461,7 @@ def predict(dataset, trained_model):
         f" and {100 * accuracy} % resp."
     )
 
-    return predictions, attention_weights
+    return predictions
 
 
 def loso_evaluate(data):
@@ -416,7 +494,7 @@ def loso_evaluate(data):
         val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
         val_dataset = val_dataset.batch(8).prefetch(buffer_size=tf.data.AUTOTUNE)
 
-        current_model = create_model(input_shape)
+        current_model = MILModel(input_shape=input_shape, M=M)
 
         # Train the models on the training data
         trained_model = train(train_dataset, val_dataset, current_model)
@@ -424,7 +502,7 @@ def loso_evaluate(data):
         print_memory_usage()
 
         # Evaluate the model on the validation data
-        class_predictions, attention_params = predict(val_dataset, trained_model)
+        class_predictions = predict(val_dataset, trained_model)
 
         del trained_model
 
@@ -465,7 +543,7 @@ def rkf_evaluate(data, k, n_repeats):
     y_test = data['y_test'].tolist()
 
     # Initialize RepeatedKFold
-    rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats, random_state=42)
+    rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats)
     overall_accuracies = []
     overall_sensitivities = []
     overall_specificities = []
@@ -477,7 +555,6 @@ def rkf_evaluate(data, k, n_repeats):
     all_predicted_probs = []
 
     for idx, (train_index, test_index) in enumerate(rkf.split(bags), 1):
-
         print(f"\033[91mIteration {idx}/{k * n_repeats}\033[0m")
 
         # Split the data into training and validation sets
@@ -495,18 +572,18 @@ def rkf_evaluate(data, k, n_repeats):
         print_memory_usage()
 
         train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
-        train_dataset = train_dataset.shuffle(buffer_size=10*len(train_data), seed=42).batch(1).prefetch(
+        train_dataset = train_dataset.shuffle(buffer_size=10 * len(train_data)).batch(1).prefetch(
             buffer_size=tf.data.AUTOTUNE)
         val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
         val_dataset = val_dataset.batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
 
-        current_model = create_model(input_shape)
+        current_model = MILModel(input_shape=input_shape, M=M)
 
         # Train the models on the training data
         trained_model = train(train_dataset, train_dataset, current_model)
 
         # Evaluate the model on the validation data
-        class_predictions, attention_params = predict(val_dataset, trained_model)
+        class_predictions = predict(val_dataset, trained_model)
 
         del trained_model
 
@@ -574,7 +651,7 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
     y_train = data['y_train'].tolist()
 
     # Initialize RepeatedKFold
-    rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats, random_state=42)
+    rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats)
     overall_accuracies = []
     overall_sensitivities = []
     overall_specificities = []
@@ -586,7 +663,6 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
     all_predicted_probs = []
 
     for idx, (train_val_index, test_index) in enumerate(rkf.split(bags), 1):
-
         print(f"\033[91mIteration {idx}/{k * n_repeats}\033[0m")
 
         # Split the data into train+val and test sets
@@ -596,7 +672,7 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
         test_labels = [y_train[i] for i in test_index]
 
         # Further split train_val into train and val
-        rkf_inner = RepeatedKFold(n_splits=k-1, n_repeats=1, random_state=42)
+        rkf_inner = RepeatedKFold(n_splits=k - 1, n_repeats=1)
         train_index, val_index = next(rkf_inner.split(train_val_bags))
 
         # Prepare the training, validation, and testing datasets
@@ -619,7 +695,8 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
 
         # Create TensorFlow datasets
         train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
-        train_dataset = train_dataset.shuffle(buffer_size=10*len(train_data), seed=42).batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
+        train_dataset = train_dataset.shuffle(buffer_size=10 * len(train_data)).batch(1).prefetch(
+            buffer_size=tf.data.AUTOTUNE)
 
         val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
         val_dataset = val_dataset.batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
@@ -628,13 +705,13 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
         test_dataset = test_dataset.batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
 
         # Create the model
-        current_model = create_model(input_shape)
+        current_model = MILModel(input_shape=input_shape, M=M)
 
         # Train the model on the training and validation data
         trained_model = train(train_dataset, val_dataset, current_model)
 
         # Evaluate the model on the test data
-        class_predictions, attention_params = predict(test_dataset, trained_model)
+        class_predictions = predict(test_dataset, trained_model)
 
         del trained_model
 

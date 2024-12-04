@@ -58,23 +58,24 @@ unlabeled_dataset_size = 10000
 labeled_dataset_size = 100
 
 M = 64
-E_thres = 0.15
+E_thres = 0.15 * 2
 Kt = 100
-batch_size = 100
-num_epochs = 50
+batch_size = Kt
+num_epochs = 100
 temperature = 0.1
+learning_rate = 0.001
 
 """
 ## Dataset
 """
 
 # Adjust the paths to be relative to the current script location
-# gdata_path = os.path.join('..', 'data', 'tremor_gdata.pickle')
-# tremor_gdata = unpickle_data(gdata_path)
-# gdataset = form_unlabeled_dataset(tremor_gdata, E_thres, Kt)
+gdata_path = os.path.join('..', 'data', 'tremor_gdata.pickle')
+tremor_gdata = unpickle_data(gdata_path)
+gdataset = form_unlabeled_dataset(tremor_gdata, E_thres, Kt)
 
-with open("unlabeled_data.pickle", 'rb') as f:
-    gdataset = pkl.load(f)
+# with open("unlabeled_data.pickle", 'rb') as f:
+#     gdataset = pkl.load(f)
 
 print(np.shape(gdataset))
 
@@ -85,14 +86,18 @@ gdataset = gdataset[:unlabeled_dataset_size]
 print(np.shape(gdataset))
 
 gdataset = tf.data.Dataset.from_tensor_slices(gdataset)
-gdataset = gdataset.shuffle(buffer_size=len(gdataset)).batch(batch_size).prefetch(buffer_size=tf.data.AUTOTUNE)
+# gdataset = gdataset.shuffle(buffer_size=len(gdataset)).batch(batch_size).prefetch(buffer_size=tf.data.AUTOTUNE)
+gdataset = gdataset.batch(batch_size).shuffle(buffer_size=int(len(gdataset) / batch_size)).prefetch(
+    buffer_size=tf.data.AUTOTUNE)
 
 with open("labeled_windows_dataset.pickle", 'rb') as f:
     labeled_gdataset = pkl.load(f)
 
 labeled_gdataset['X'] = labeled_gdataset['X'].apply(lambda window: normalize_window(window))
 
-print(labeled_gdataset)
+# print(type(labeled_gdataset))
+# labeled_gdataset = pd.concat([labeled_gdataset, labeled_gdataset], ignore_index=True)
+# print(labeled_gdataset)
 
 labeled_gdataset = tf.data.Dataset.from_tensor_slices((list(labeled_gdataset['X']), list(labeled_gdataset['y'])))
 labeled_gdataset = labeled_gdataset.shuffle(buffer_size=len(labeled_gdataset), seed=42).batch(1).prefetch(
@@ -110,12 +115,17 @@ train_dataset = tf.data.Dataset.zip(
 
 
 class Augmentation:
-    def __init__(self, jitter_factor=0.1, rotation_angle=np.pi, gravity_factor=0.1, sliding_factor=0.15,
+    def __init__(self, overlap=0.97,
+                 jitter_factor=0.1,
+                 rotation_angle=np.pi,
+                 gravity_factor=0.05,
+                 sliding_factor=0.1,
                  block_size_ratio=0.1,
                  crop_ratio=0.1,
                  lambda_amp=0.5,
-                 n_perm_seg=10, min_seg_size=125):
+                 n_perm_seg=15):
         # Set default parameters for each augmentation
+        self.overlap = overlap
         self.jitter_factor = jitter_factor
         self.rotation_angle = rotation_angle
         self.gravity_factor = gravity_factor
@@ -124,7 +134,26 @@ class Augmentation:
         self.crop_ratio = crop_ratio
         self.lambda_amp = lambda_amp
         self.n_perm_seg = n_perm_seg
-        self.min_seg_size = min_seg_size
+
+    def shift_window(self, data):
+        """
+        Randomly picks a window of size (500, 3) from each sample in the batch.
+        """
+        batch_size, time_steps, channels = tf.shape(data)[0], tf.shape(data)[1], tf.shape(data)[2]
+        window_size = 500
+
+        # Generate a random start index for each sample in the batch
+        start_indices = tf.random.uniform(shape=[batch_size], minval=0, maxval=(time_steps - window_size + 1),
+                                          dtype=tf.int32)
+
+        # Create an array of indices for selecting windows
+        # This creates a range of indices for each sample
+        indices = tf.range(window_size)[tf.newaxis, :] + start_indices[:, tf.newaxis]
+
+        # Use tf.gather to extract windows based on the calculated indices
+        shifted_data = tf.gather(data, indices, axis=1, batch_dims=1)
+
+        return shifted_data
 
     def jitter(self, data):
         """Add random noise to the data."""
@@ -430,21 +459,66 @@ class Augmentation:
 
         return smoothed_data
 
+    # def permute_segments(self, data):
+    #     """
+    #     Permute segments of the input data along the time axis.
+    #     """
+    #     batch_size, time_steps, channels = tf.shape(data)[0], tf.shape(data)[1], tf.shape(data)[2]
+    #
+    #     # Ensure that the time_steps can be divided into n_perm_seg segments
+    #     segment_size = time_steps // self.n_perm_seg
+    #
+    #     # Reshape data to have an extra dimension for the segments
+    #     reshaped_data = tf.reshape(data, [batch_size, self.n_perm_seg, segment_size, channels])
+    #
+    #     # Generate a random permutation of the segment indices for each sample in the batch
+    #     permuted_indices = tf.map_fn(
+    #         lambda _: tf.random.shuffle(tf.range(self.n_perm_seg)),
+    #         tf.zeros([batch_size], dtype=tf.int32),
+    #         fn_output_signature=tf.int32
+    #     )
+    #
+    #     # Gather the segments in the new permuted order for each batch
+    #     permuted_data = tf.map_fn(
+    #         lambda x: tf.gather(x[0], x[1]),
+    #         (reshaped_data, permuted_indices),
+    #         fn_output_signature=tf.float32
+    #     )
+    #
+    #     # Reshape back to the original shape (batch_size, time_steps, channels)
+    #     permuted_data = tf.reshape(permuted_data, [batch_size, time_steps, channels])
+    #
+    #     return permuted_data
+
     def permute_segments(self, data):
         """
         Permute segments of the input data along the time axis.
         """
         batch_size, time_steps, channels = tf.shape(data)[0], tf.shape(data)[1], tf.shape(data)[2]
 
-        # Ensure that the time_steps can be divided into n_perm_seg segments
-        segment_size = time_steps // self.n_perm_seg
+        # Calculate the divisor and remainder
+        divisor = time_steps // self.n_perm_seg
+        remainder = time_steps % self.n_perm_seg
 
-        # Reshape data to have an extra dimension for the segments
-        reshaped_data = tf.reshape(data, [batch_size, self.n_perm_seg, segment_size, channels])
+        # tf.print("divisor: ", divisor)
+        # tf.print("remainder: ", remainder)
+
+        # Reshape the first n_perm_seg - 1 segments with size divisor
+        reshaped_data_1 = tf.reshape(data[:, :divisor * (self.n_perm_seg - 1), :],
+                                     [batch_size, self.n_perm_seg - 1, divisor, channels])
+
+        # tf.print("reshaped_data_1 shape: ", tf.shape(reshaped_data_1))
+
+        # Reshape the last segment to include the remainder (divisor + remainder)
+        last_segment_start = divisor * (self.n_perm_seg - 1)
+        reshaped_data_2 = tf.reshape(data[:, last_segment_start:, :],
+                                     [batch_size, divisor + remainder, channels])
+
+        # tf.print("reshaped_data_2 shape: ", tf.shape(reshaped_data_2))
 
         # Generate a random permutation of the segment indices for each sample in the batch
         permuted_indices = tf.map_fn(
-            lambda _: tf.random.shuffle(tf.range(self.n_perm_seg)),
+            lambda _: tf.random.shuffle(tf.range(self.n_perm_seg - 1)),
             tf.zeros([batch_size], dtype=tf.int32),
             fn_output_signature=tf.int32
         )
@@ -452,14 +526,122 @@ class Augmentation:
         # Gather the segments in the new permuted order for each batch
         permuted_data = tf.map_fn(
             lambda x: tf.gather(x[0], x[1]),
-            (reshaped_data, permuted_indices),
+            (reshaped_data_1, permuted_indices),
             fn_output_signature=tf.float32
         )
 
         # Reshape back to the original shape (batch_size, time_steps, channels)
-        permuted_data = tf.reshape(permuted_data, [batch_size, time_steps, channels])
+        permuted_data = tf.reshape(permuted_data, [batch_size, time_steps - divisor - remainder, channels])
+
+        # tf.print("permuted_data shape: ", tf.shape(permuted_data))
+
+        permuted_data = tf.concat([permuted_data, reshaped_data_2], axis=1)
+
+        # tf.print("permuted_data shape: ", tf.shape(permuted_data))
 
         return permuted_data
+
+    # def permute_segments(self, data):
+    #     """
+    #     Permute segments of the input data along the time axis,
+    #     with a different `n_perm_seg` value randomly chosen for each batch.
+    #     """
+    #     batch_size, time_steps, channels = tf.shape(data)[0], tf.shape(data)[1], tf.shape(data)[2]
+    #
+    #     time_steps = tf.cast(time_steps, tf.int32)
+    #
+    #     # Generate a random `n_perm_seg` for each batch element
+    #     n_perm_seg = tf.random.uniform(
+    #         shape=[batch_size],
+    #         minval=self.n_perm_seg[0],
+    #         maxval=self.n_perm_seg[1] + 1,
+    #         dtype=tf.int32
+    #     )
+    #
+    #     # n_perm_seg = tf.fill([batch_size], 15)
+    #
+    #     def process_single_sample(sample, n_seg):
+    #         # Calculate the divisor and remainder for the given n_perm_seg
+    #         # divisor = time_steps // n_seg
+    #         # remainder = time_steps % n_seg
+    #
+    #         divisor = tf.math.floordiv(time_steps, n_seg)
+    #         remainder = tf.math.floormod(time_steps, n_seg)
+    #
+    #         # tf.print("time_steps type: ", type(time_steps))
+    #         # tf.print("n_seg type: ", type(n_seg))
+    #
+    #         # Reshape the first n_perm_seg - 1 segments with size `divisor`
+    #         reshaped_data_1 = tf.reshape(sample[:divisor * (n_seg - 1), :],
+    #                                      [n_seg - 1, divisor, channels])
+    #
+    #         # Reshape the last segment to include the remainder (divisor + remainder)
+    #         last_segment_start = divisor * (n_seg - 1)
+    #         reshaped_data_2 = tf.reshape(sample[last_segment_start:, :], [divisor + remainder, channels])
+    #
+    #         # Generate a random permutation of the segment indices
+    #         permuted_indices = tf.random.shuffle(tf.range(n_seg - 1))
+    #
+    #         # Gather the segments in the new permuted order
+    #         permuted_segments = tf.gather(reshaped_data_1, permuted_indices)
+    #
+    #         permuted_segments = tf.reshape(permuted_segments, [time_steps - divisor - remainder, channels])
+    #
+    #         # Concatenate the permuted segments with the last segment
+    #         permuted_sample = tf.concat([permuted_segments, reshaped_data_2], axis=0)
+    #
+    #         return permuted_sample
+    #
+    #     # Apply the process_single_sample function to each sample in the batch
+    #     permuted_data = tf.map_fn(
+    #         lambda x: process_single_sample(x[0], x[1]),
+    #         (data, n_perm_seg),
+    #         fn_output_signature=tf.float32
+    #     )
+    #
+    #     return permuted_data
+
+    def shift_windows_fun(self, data):
+        """
+        Extracts two overlapping windows of size (500, 3) from each sample in the input data.
+        """
+        batch_size, time_steps, channels = tf.shape(data)[0], tf.shape(data)[1], tf.shape(data)[2]
+        window_size = 500
+        overlap_size = int(self.overlap * window_size)
+        max_start = time_steps - window_size - (window_size - overlap_size)
+
+        # Generate random starting index for the first window
+        start_indices = tf.random.uniform(shape=[batch_size], minval=0, maxval=max_start + 1, dtype=tf.int32)
+
+        # Calculate the start index for the second window with 10% overlap
+        second_start_indices = start_indices + (window_size - overlap_size)
+
+        # Create index ranges for the first and second windows
+        indices_1 = tf.range(window_size)[tf.newaxis, :] + start_indices[:, tf.newaxis]
+        indices_2 = tf.range(window_size)[tf.newaxis, :] + second_start_indices[:, tf.newaxis]
+
+        # Extract the two windows
+        window_batch_1 = tf.gather(data, indices_1, axis=1, batch_dims=1)
+        window_batch_2 = tf.gather(data, indices_2, axis=1, batch_dims=1)
+
+        return window_batch_1, window_batch_2
+
+    def shift_windows(self):
+        return layers.Lambda(self.shift_windows_fun)
+
+    class CustomNormalizer(layers.Layer):
+        def call(self, inputs):
+            # Normalize positive values to [0, 1]
+            positive = tf.clip_by_value(inputs, clip_value_min=0, clip_value_max=tf.reduce_max(inputs))
+            positive = positive / (tf.reduce_max(positive) + 1e-8)  # Add epsilon to avoid division by zero
+
+            # Normalize negative values to [-1, 0]
+            negative = tf.clip_by_value(inputs, clip_value_min=tf.reduce_min(inputs), clip_value_max=0)
+            negative = negative / (tf.reduce_min(negative) - 1e-8)  # Add epsilon to avoid division by zero
+
+            # Combine positive and negative normalized data
+            normalized = tf.where(inputs >= 0, positive, negative)
+            return normalized
 
     def get_augmenter(self):
         """Combine several augmentations into a single sequential model."""
@@ -471,13 +653,14 @@ class Augmentation:
                 # layers.Lambda(self.random_channel_permutation),
                 layers.Lambda(self.rotate_axis),
                 layers.Lambda(self.add_gravity),
-                layers.Lambda(self.slide_window),
+                # layers.Lambda(self.slide_window),
                 # layers.Lambda(self.blockout),
                 # layers.Lambda(self.crop_and_resize),
                 # layers.Lambda(self.magnitude_warping),
                 # layers.Lambda(self.time_warping),
                 # layers.Lambda(self.random_smoothing),
                 layers.Lambda(self.permute_segments),
+                # self.CustomNormalizer(),
             ]
         )
 
@@ -532,25 +715,33 @@ def embeddings_function(M):
             # Layer 1
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
+            # layers.BatchNormalization(),
             layers.LeakyReLU(negative_slope=0.2),
+            layers.Dropout(0.1),
             layers.MaxPooling1D(pool_size=2),
 
             # Layer 2
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
+            # layers.BatchNormalization(),
             layers.LeakyReLU(negative_slope=0.2),
+            layers.Dropout(0.1),
             layers.MaxPooling1D(pool_size=2),
 
             # Layer 3
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
+            # layers.BatchNormalization(),
             layers.LeakyReLU(negative_slope=0.2),
+            layers.Dropout(0.1),
             layers.MaxPooling1D(pool_size=2),
 
             # Layer 4
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
+            # layers.BatchNormalization(),
             layers.LeakyReLU(negative_slope=0.2),
+            layers.Dropout(0.1),
             layers.MaxPooling1D(pool_size=2),
 
             # Flatten and Dense layer to get M-dimensional output
@@ -559,6 +750,7 @@ def embeddings_function(M):
         ],
         name="embeddings_function",
     )
+
 
 
 """
@@ -574,6 +766,7 @@ class ContrastiveModel(keras.Model):
         self.temperature = temperature
         self.contrastive_augmenter = augmentation.get_augmenter()
         self.classification_augmenter = augmentation.get_augmenter()
+        self.shift_windows = augmentation.shift_windows()
         self.encoder = embeddings_function(M)
 
         self.current_index = tf.Variable(0, trainable=False, dtype=tf.int32)
@@ -743,8 +936,9 @@ class ContrastiveModel(keras.Model):
         # print("Labeled data shape: ", labeled_data)
         # print("Labels shape: ", labels)
         # Each window is augmented twice, differently
-        augmented_data_1 = self.contrastive_augmenter(unlabeled_data, training=True)
-        augmented_data_2 = self.contrastive_augmenter(unlabeled_data, training=True)
+        augmented_data_1, augmented_data2 = self.shift_windows(unlabeled_data, training=True)
+        augmented_data_1 = self.contrastive_augmenter(augmented_data_1, training=True)
+        augmented_data_2 = self.contrastive_augmenter(augmented_data2, training=True)
 
         with tf.GradientTape() as tape:
             # Pass both augmented versions of the images through the encoder
@@ -845,12 +1039,12 @@ class ContrastiveModel(keras.Model):
 # Contrastive pretraining
 pretraining_model = ContrastiveModel()
 pretraining_model.compile(
-    contrastive_optimizer=keras.optimizers.Adam(learning_rate=1e-3),
-    probe_optimizer=keras.optimizers.Adam(learning_rate=1e-3)
+    contrastive_optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
+    probe_optimizer=keras.optimizers.Adam(learning_rate=learning_rate)
 )
 
 early_stopping = callbacks.EarlyStopping(
-    monitor="val_p_loss",
+    monitor="c_loss",
     patience=30,
     mode="min",
     verbose=1,
@@ -858,12 +1052,23 @@ early_stopping = callbacks.EarlyStopping(
     restore_best_weights=True
 )
 
+checkpoint = callbacks.ModelCheckpoint(
+    filepath="simclr_best_model.weights.h5",
+    monitor="c_loss",
+    mode="min",
+    save_best_only=True,
+    save_weights_only=True,
+    verbose=0
+)
+
 
 def lr_schedule(epoch, lr):
     total_epochs = 50
     decay_start_epoch = total_epochs // 2  # Start decay at the halfway point of the training
-    if epoch >= decay_start_epoch:
-        return lr * 1.00  # Decay the learning rate by a factor of 0.9
+    if epoch == 0:  # For the first epoch, keep the initial learning rate
+        return learning_rate
+    elif epoch >= decay_start_epoch:
+        return lr * 1.00  # Decay logic
     return lr
 
 
@@ -871,7 +1076,7 @@ lr_scheduler = callbacks.LearningRateScheduler(lr_schedule)
 
 pretraining_history = pretraining_model.fit(
     train_dataset, epochs=num_epochs, validation_data=labeled_gdataset, batch_size=batch_size,
-    callbacks=[early_stopping, lr_scheduler]
+    callbacks=[checkpoint, lr_scheduler]
 )
 
 print(
