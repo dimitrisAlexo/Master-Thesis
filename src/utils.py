@@ -28,11 +28,11 @@ def calculate_energy(segment, fs=100, nperseg=500, band=None):
 
 
 def calculate_metrics(tn, fp, fn, tp):
-    accuracy = (tp + tn) / (tn + fp + fn + tp)
-    sensitivity = tp / (tp + fn)
-    specificity = tn / (tn + fp)
-    precision = tp / (tp + fp)
-    f1_score = 2 * sensitivity * precision / (sensitivity + precision)
+    accuracy = safe_metric(tp + tn, tn + fp + fn + tp)
+    sensitivity = safe_metric(tp, tp + fn)
+    specificity = safe_metric(tn, tn + fp)
+    precision = safe_metric(tp, tp + fp)
+    f1_score = safe_metric(2 * sensitivity * precision, sensitivity + precision)
     return accuracy, sensitivity, specificity, precision, f1_score
 
 
@@ -129,11 +129,6 @@ def filter_data(subject, E_thres, Kt):
     if len(bag) < Kt:
         return None
 
-    # if len(bag) < Kt:
-    #     # Repeat the content of the bag until its length is exactly Kt
-    #     repeats = (Kt // len(bag)) + 1
-    #     bag = (bag * repeats)[:Kt]
-
     return np.array(bag)
 
 
@@ -156,13 +151,46 @@ def form_unlabeled_dataset(tremor_data, E_thres, Kt):
     data = np.array(data)
 
     # Shuffle only the batches, i.e., along the first axis
-    # indices = np.random.permutation(data.shape[0])
-    # data = data[indices]
+    indices = np.random.permutation(data.shape[0])
+    data = data[indices]
 
     with open("unlabeled_data.pickle", 'wb') as f:
         pkl.dump(data, f)
 
     return data
+
+
+def form_federated_dataset(tremor_data, E_thres, Kt, num_clients):
+    data = []
+    counter = 0
+
+    # Collect and filter data
+    for subject_id in tremor_data.keys():
+        if isinstance(tremor_data[subject_id][1], dict):
+            bag = filter_data(tremor_data[subject_id], E_thres, Kt)
+            if bag is not None:
+                counter += 1
+                print(counter)
+                data.extend(bag)
+
+    print("Counter: ", counter)
+
+    # Ensure enough data to divide into num_clients
+    data = np.array(data)
+    if len(data) < Kt * num_clients:
+        raise ValueError("Not enough data to form the specified number of clients with Kt windows each.")
+
+    # Split data into client-specific datasets
+    federated_data = []
+    for i in range(num_clients):
+        client_data = data[i * Kt:(i + 1) * Kt]
+        federated_data.append(client_data)
+
+    # Save raw data (NumPy arrays)
+    with open("federated_data.pickle", 'wb') as f:
+        pkl.dump(federated_data, f)
+
+    return federated_data
 
 
 def normalize(data):
@@ -185,3 +213,51 @@ def normalize_window(window):
     normalized_window = 2 * (window - min_val) / (max_val - min_val) - 1
 
     return normalized_window
+
+
+def normalize_mil(data):
+    """
+    Normalize MIL data in the shape (bags, batch_size, time_steps, channels)
+    using min-max normalization within each bag and batch.
+    """
+    # Find the min and max values for each bag and batch (across time_steps and channels)
+    min_val = np.min(data, axis=(2, 3), keepdims=True)  # shape: (bags, batch_size, 1, 1)
+    max_val = np.max(data, axis=(2, 3), keepdims=True)  # shape: (bags, batch_size, 1, 1)
+
+    # Avoid division by zero by adding a small epsilon to the denominator
+    epsilon = 1e-8
+    data_normalized = 2 * (data - min_val) / (max_val - min_val + epsilon) - 1
+
+    return data_normalized
+
+
+def safe_confusion_matrix(true_labels, predicted_labels):
+    """
+    Computes the confusion matrix safely and returns TN, FP, FN, TP.
+    Handles cases where only one class is present.
+    """
+    cm = confusion_matrix(true_labels, predicted_labels)
+
+    # If confusion matrix is 1x1 (only one class present), handle accordingly
+    if cm.shape == (1, 1):
+        if true_labels[0] == 0:
+            # All true labels and predicted labels are 0
+            tn = cm[0, 0]
+            fp = fn = tp = 0
+        else:
+            # All true labels and predicted labels are 1
+            tp = cm[0, 0]
+            tn = fp = fn = 0
+    elif cm.shape == (2, 2):
+        tn, fp, fn, tp = cm.ravel()
+    else:
+        raise ValueError("Unexpected confusion matrix shape.")
+
+    return tn, fp, fn, tp
+
+
+def safe_metric(numerator, denominator):
+    """Returns a safe division result to avoid ZeroDivisionError."""
+    if denominator == 0:
+        return np.nan  # Or return 0, depending on your preference
+    return numerator / denominator

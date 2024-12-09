@@ -198,28 +198,28 @@ def embeddings_function(M):
             # Layer 1
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
-            # layers.BatchNormalization(),
+            layers.BatchNormalization(),
             layers.LeakyReLU(negative_slope=0.2),
             layers.MaxPooling1D(pool_size=2),
 
             # Layer 2
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
-            # layers.BatchNormalization(),
+            layers.BatchNormalization(),
             layers.LeakyReLU(negative_slope=0.2),
             layers.MaxPooling1D(pool_size=2),
 
             # Layer 3
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
-            # layers.BatchNormalization(),
+            layers.BatchNormalization(),
             layers.LeakyReLU(negative_slope=0.2),
             layers.MaxPooling1D(pool_size=2),
 
             # Layer 4
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
-            # layers.BatchNormalization(),
+            layers.BatchNormalization(),
             layers.LeakyReLU(negative_slope=0.2),
             layers.MaxPooling1D(pool_size=2),
 
@@ -261,6 +261,10 @@ class MILModel(keras.Model):
         self.weight_params_dim = weight_params_dim
         self.use_gated = use_gated
 
+        # Define encoder optimizer
+        self.embeddings_learning_rate = 1e-5
+        self.optimizer_embeddings = keras.optimizers.Adam(learning_rate=self.embeddings_learning_rate)
+
         # Define model components
         self.mask_layer = layers.Lambda(self.create_mask_layer, name="mask_layer")
         self.reshape_to_embeddings = layers.Lambda(lambda x: tf.reshape(x, (-1, self.Ws, self.C)))
@@ -279,6 +283,14 @@ class MILModel(keras.Model):
 
         # Finetune
         self.finetune()
+
+    @property
+    def optimizer(self):
+        return self.optimizer_other
+
+    @optimizer.setter
+    def optimizer(self, value):
+        self.optimizer_other = value
 
     def create_mask_layer(self, inputs):
         # Sum the features along the last two dimensions (500, 3)
@@ -313,15 +325,35 @@ class MILModel(keras.Model):
 
     def finetune(self):
         """Load pre-trained weights for the embeddings function."""
-        dummy_input = tf.random.normal((1, self.Ws, self.C))  # Create a dummy input to trigger build
-        _ = self.embeddings_function(dummy_input)  # Forward pass to build the layer
-
         try:
+            self.embeddings_function.build(input_shape=(None, self.Ws, self.C))
             self.embeddings_function.load_weights("embeddings.weights.h5")
-            self.embeddings_function.trainable = True  # Set encoder trainable for fine-tuning
+            self.embeddings_function.trainable = True  # Freeze encoder
             print("Successfully loaded SimCLR weights into encoder.")
         except Exception as e:
             print(f"Failed to load SimCLR weights: {e}")
+
+    # def train_step(self, data):
+    #     # Unpack data
+    #     x, y = data
+    #
+    #     with tf.GradientTape() as tape:
+    #         # Forward pass
+    #         y_pred = self(x, training=True)
+    #         # Compute the loss using model.compute_loss
+    #         loss = self.compute_loss(x, y, y_pred)
+    #
+    #     # Compute gradients
+    #     gradients = tape.gradient(loss, self.trainable_variables)
+    #     # Apply gradients
+    #     self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+    #
+    #     # Manually update metrics
+    #     for metric in self.metrics:
+    #         metric.update_state(y, y_pred)
+    #
+    #     # Return a dictionary mapping metric names to their current value
+    #     return {m.name: m.result() for m in self.metrics}
 
     def train_step(self, data):
         # Unpack data
@@ -330,19 +362,42 @@ class MILModel(keras.Model):
         with tf.GradientTape() as tape:
             # Forward pass
             y_pred = self(x, training=True)
-            # Compute the loss using model.compute_loss
+            # Compute the loss
             loss = self.compute_loss(x, y, y_pred)
 
-        # Compute gradients
+        # print("all trainable variables: ", self.trainable_variables)
+        # print("length of trainable variables: ", len(self.trainable_variables))
+
+        # Separate parameters for different learning rates
+        embeddings_vars = self.embeddings_function.trainable_variables
+        # print("Type of embeddings_vars: ", type(embeddings_vars))
+        # print("Length of embeddings_vars: ", len(embeddings_vars))
+        # print("embeddings_vars: ", embeddings_vars)
+
+        other_vars = self.trainable_variables[len(embeddings_vars):]
+        # print("Type of other_vars: ", type(other_vars))
+        # print("Length of other_vars: ", len(other_vars))
+        # print("other_vars: ", other_vars)
+
+        # Compute gradients for both parameter groups
         gradients = tape.gradient(loss, self.trainable_variables)
-        # Apply gradients
-        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+        # print("Length of gradients: ", len(gradients))
+        # print("gradients: ", gradients)
+        embeddings_grads = gradients[:len(embeddings_vars)]
+        # print("Length of embeddings_grads: ", len(embeddings_grads))
+        # print("embeddings_grads: ", embeddings_grads)
+        other_grads = gradients[len(embeddings_vars):]
+        # print("Length of other_grads: ", len(other_grads))
+        # print("other_grads: ", other_grads)
+
+        # Apply gradients with different learning rates
+        self.optimizer_embeddings.apply_gradients(zip(embeddings_grads, embeddings_vars))
+        self.optimizer_other.apply_gradients(zip(other_grads, other_vars))
 
         # Manually update metrics
         for metric in self.metrics:
             metric.update_state(y, y_pred)
 
-        # Return a dictionary mapping metric names to their current value
         return {m.name: m.result() for m in self.metrics}
 
 
@@ -356,7 +411,7 @@ class ClearMemory(callbacks.Callback):
 
 
 def lr_schedule(epoch, lr):
-    total_epochs = 50
+    total_epochs = num_epochs
     decay_start_epoch = total_epochs // 2  # Start decay at the halfway point of the training
     if epoch >= decay_start_epoch:
         return lr * 0.90  # Decay the learning rate by a factor of 0.9
@@ -377,7 +432,7 @@ def train(train_dataset, val_dataset, model):
     model_checkpoint = callbacks.ModelCheckpoint(
         file_path,
         monitor="val_loss",
-        verbose=0,
+        verbose=1,
         mode="min",
         save_best_only=True,
         save_weights_only=True,
@@ -401,7 +456,7 @@ def train(train_dataset, val_dataset, model):
 
     # Compile model.
     model.compile(
-        optimizer=optimizers.Adam(learning_rate=1e-3),
+        optimizer=optimizers.Adam(learning_rate=5e-4),
         loss="sparse_categorical_crossentropy",
         metrics=["accuracy"],
         auto_scale_loss=True
@@ -411,31 +466,33 @@ def train(train_dataset, val_dataset, model):
     model.fit(
         train_dataset,
         validation_data=val_dataset,
-        epochs=50,
-        batch_size=8,
-        callbacks=[model_checkpoint, lr_scheduler, clear_memory],
+        epochs=num_epochs,
+        batch_size=batch_size,
+        callbacks=[lr_scheduler, clear_memory],
         verbose=1,
     )
 
     # Load best weights.
-    print("Loading best weights...")
-    model.load_weights(file_path)
+    # print("Loading best weights...")
+    # model.load_weights(file_path)
 
     return model
 
 
 # Adjust the paths to be relative to the current script location
-sdata_path = os.path.join('..', 'data', 'tremor_sdata.pickle')
-# gdata_path = os.path.join('..', 'data', 'tremor_gdata.pickle')
-tremor_sdata = unpickle_data(sdata_path)
+# sdata_path = os.path.join('..', 'data', 'tremor_sdata.pickle')
+# tremor_sdata = unpickle_data(sdata_path)
 
 E_thres = 0.15
 Kt = 100
+num_epochs = 50
+batch_size = 1
 # {'updrs16', 'updrs20', 'updrs21', 'tremor_manual'}
-sdataset = form_dataset(tremor_sdata, E_thres, Kt, 'tremor_manual', 'tremor_manual')
+# sdataset = form_dataset(tremor_sdata, E_thres, Kt, 'tremor_manual', 'tremor_manual')
 
-# with open("sdataset.pickle", 'rb') as f:
-#     sdataset = pkl.load(f)
+with open("sdataset.pickle", 'rb') as f:
+    print("Loading sdataset...")
+    sdataset = pkl.load(f)
 
 print(sdataset)
 
@@ -483,16 +540,18 @@ def loso_evaluate(data):
         val_label = [y_test[i] for i in test_index]
 
         train_data = np.array(train_bags)
+        train_data = normalize_mil(train_data)
         train_labels = np.array([np.array([label]) for label in train_labels])
 
         val_data = np.array(val_bag)
+        val_data = normalize_mil(val_data)
         val_labels = np.array([np.array([label]) for label in val_label])
 
         train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
-        train_dataset = train_dataset.shuffle(buffer_size=len(train_data)).batch(8).prefetch(
+        train_dataset = train_dataset.shuffle(buffer_size=len(train_data)).batch(batch_size).prefetch(
             buffer_size=tf.data.AUTOTUNE)
         val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
-        val_dataset = val_dataset.batch(8).prefetch(buffer_size=tf.data.AUTOTUNE)
+        val_dataset = val_dataset.batch(batch_size).prefetch(buffer_size=tf.data.AUTOTUNE)
 
         current_model = MILModel(input_shape=input_shape, M=M)
 
@@ -564,18 +623,20 @@ def rkf_evaluate(data, k, n_repeats):
         val_label = [y_test[i] for i in test_index]
 
         train_data = np.array(train_bags)
+        train_data = normalize_mil(train_data)
         train_labels = np.array([np.array([label]) for label in train_labels])
 
         val_data = np.array(val_bags)
+        val_data = normalize_mil(val_data)
         val_labels = np.array([np.array([label]) for label in val_label])
 
         print_memory_usage()
 
         train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
-        train_dataset = train_dataset.shuffle(buffer_size=10 * len(train_data)).batch(1).prefetch(
+        train_dataset = train_dataset.shuffle(buffer_size=10 * len(train_data)).batch(batch_size).prefetch(
             buffer_size=tf.data.AUTOTUNE)
         val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
-        val_dataset = val_dataset.batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
+        val_dataset = val_dataset.batch(batch_size).prefetch(buffer_size=tf.data.AUTOTUNE)
 
         current_model = MILModel(input_shape=input_shape, M=M)
 
@@ -586,6 +647,7 @@ def rkf_evaluate(data, k, n_repeats):
         class_predictions = predict(val_dataset, trained_model)
 
         del trained_model
+        gc.collect()
 
         # Compute confusion matrix
         predicted_labels = np.argmax(class_predictions, axis=1).flatten()
@@ -600,7 +662,7 @@ def rkf_evaluate(data, k, n_repeats):
         print("predicted_labels:", predicted_labels)
         print("true_labels:", true_labels)
 
-        tn, fp, fn, tp = confusion_matrix(true_labels, predicted_labels).ravel()
+        tn, fp, fn, tp = safe_confusion_matrix(true_labels, predicted_labels)
         print("tn:", tn)
         print("fp:", fp)
         print("fn:", fn)
@@ -642,7 +704,15 @@ def rkf_evaluate(data, k, n_repeats):
     all_predicted_probs = all_predicted_probs[valid_indices]
     all_predicted_labels = all_predicted_labels[valid_indices]
 
-    return all_true_labels, all_predicted_probs, all_predicted_labels
+    results = {
+        'final_accuracy': final_accuracy,
+        'final_sensitivity': final_sensitivity,
+        'final_specificity': final_specificity,
+        'final_precision': final_precision,
+        'final_f1_score': final_f1_score
+    }
+
+    return all_true_labels, all_predicted_probs, all_predicted_labels, results
 
 
 def rkf_evaluate_with_validation(data, k, n_repeats):
@@ -651,7 +721,7 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
     y_train = data['y_train'].tolist()
 
     # Initialize RepeatedKFold
-    rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats)
+    rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats, random_state=42)
     overall_accuracies = []
     overall_sensitivities = []
     overall_specificities = []
@@ -672,7 +742,7 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
         test_labels = [y_train[i] for i in test_index]
 
         # Further split train_val into train and val
-        rkf_inner = RepeatedKFold(n_splits=k - 1, n_repeats=1)
+        rkf_inner = RepeatedKFold(n_splits=k - 1, n_repeats=1, random_state=42)
         train_index, val_index = next(rkf_inner.split(train_val_bags))
 
         # Prepare the training, validation, and testing datasets
@@ -683,9 +753,11 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
 
         # Convert all sets to numpy arrays
         train_data = np.array(train_bags)
+        train_data = normalize_mil(train_data)
         train_labels = np.array([np.array([label]) for label in train_labels])
 
         val_data = np.array(val_bags)
+        val_data = normalize_mil(val_data)
         val_labels = np.array([np.array([label]) for label in val_labels])
 
         test_data = np.array(test_bags)
@@ -695,14 +767,14 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
 
         # Create TensorFlow datasets
         train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
-        train_dataset = train_dataset.shuffle(buffer_size=10 * len(train_data)).batch(1).prefetch(
+        train_dataset = train_dataset.shuffle(buffer_size=10 * len(train_data), seed=42).batch(batch_size).prefetch(
             buffer_size=tf.data.AUTOTUNE)
 
         val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
-        val_dataset = val_dataset.batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
+        val_dataset = val_dataset.batch(batch_size).prefetch(buffer_size=tf.data.AUTOTUNE)
 
         test_dataset = tf.data.Dataset.from_tensor_slices((test_data, test_labels))
-        test_dataset = test_dataset.batch(1).prefetch(buffer_size=tf.data.AUTOTUNE)
+        test_dataset = test_dataset.batch(batch_size).prefetch(buffer_size=tf.data.AUTOTUNE)
 
         # Create the model
         current_model = MILModel(input_shape=input_shape, M=M)
@@ -714,6 +786,7 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
         class_predictions = predict(test_dataset, trained_model)
 
         del trained_model
+        gc.collect()
 
         # Compute confusion matrix
         predicted_labels = np.argmax(class_predictions, axis=1).flatten()
@@ -727,8 +800,9 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
 
         print("predicted_labels:", predicted_labels)
         print("true_labels:", true_labels)
+        print("validation_labels:", val_labels.flatten())
 
-        tn, fp, fn, tp = confusion_matrix(true_labels, predicted_labels).ravel()
+        tn, fp, fn, tp = safe_confusion_matrix(true_labels, predicted_labels)
         print("tn:", tn)
         print("fp:", fp)
         print("fn:", fn)
@@ -773,17 +847,18 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
     return all_true_labels, all_predicted_probs, all_predicted_labels
 
 
-# loso_evaluate(sdataset)
-true_labels, predicted_probs, predicted_labels = rkf_evaluate(sdataset, k=5, n_repeats=4)
-# true_labels, predicted_probs, predicted_labels = rkf_evaluate_with_validation(sdataset, k=5, n_repeats=4)
+if __name__ == "__main__":
+    # loso_evaluate(sdataset)
+    true_labels, predicted_probs, predicted_labels, results = rkf_evaluate(sdataset, k=5, n_repeats=4)
+    # true_labels, predicted_probs, predicted_labels = rkf_evaluate_with_validation(sdataset, k=5, n_repeats=4)
 
-# np.savez("roc_curve_pretraining.npz", true_labels=true_labels, predicted_probs=predicted_probs)
-# np.savez("roc_curve_no_pretraining.npz", true_labels=true_labels, predicted_probs=predicted_probs)
+    # np.savez("roc_curve_pretraining.npz", true_labels=true_labels, predicted_probs=predicted_probs)
+    # np.savez("roc_curve_no_pretraining.npz", true_labels=true_labels, predicted_probs=predicted_probs)
 
-plot_roc_curve(true_labels, predicted_probs)
-plot_confusion_matrix(true_labels, predicted_labels)
+    plot_roc_curve(true_labels, predicted_probs)
+    plot_confusion_matrix(true_labels, predicted_labels)
 
-print(time.time() - start)
+    print(time.time() - start)
 
-# Alarm
-os.system('play -nq -t alsa synth {} sine {}'.format(1, 999))
+    # Alarm
+    os.system('play -nq -t alsa synth {} sine {}'.format(1, 999))
