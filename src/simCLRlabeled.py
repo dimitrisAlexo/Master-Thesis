@@ -54,16 +54,16 @@ print("Using mixed precision...")
 ## Hyperparameter setup
 """
 
-unlabeled_dataset_size = 5000
-labeled_dataset_size = 500
+unlabeled_dataset_size = 5120
+labeled_dataset_size = 450
 
 M = 64
 E_thres = 0.15 * 2
 Kt = 100
-batch_size = 200
-labeled_gdataset_batch_size = 20
+batch_size = 512
+labeled_gdataset_batch_size = 45
 num_epochs = 200
-temperature = 0.1
+temperature = 0.01
 learning_rate = 0.001
 
 """
@@ -72,8 +72,10 @@ learning_rate = 0.001
 
 # Adjust the paths to be relative to the current script location
 # gdata_path = os.path.join('..', 'data', 'tremor_gdata.pickle')
+# sdata_path = os.path.join('..', 'data', 'tremor_sdata.pickle')
 # tremor_gdata = unpickle_data(gdata_path)
-# gdataset = form_unlabeled_dataset(tremor_gdata, E_thres, Kt)
+# tremor_sdata = unpickle_data(sdata_path)
+# gdataset = form_unlabeled_dataset(tremor_gdata, tremor_sdata, E_thres, Kt)
 
 with open("unlabeled_data.pickle", 'rb') as f:
     gdataset = pkl.load(f)
@@ -95,11 +97,20 @@ gdataset = gdataset.shuffle(buffer_size=len(gdataset)).batch(batch_size).prefetc
 with open("labeled_windows_dataset.pickle", 'rb') as f:
     labeled_gdataset = pkl.load(f)
 
-labeled_gdataset['X'] = labeled_gdataset['X'].apply(lambda window: normalize_window(window))
+labeled_gdataset = labeled_gdataset.sample(frac=1).reset_index(drop=True)
+
+labeled_gdataset_train = labeled_gdataset[:150]
+labeled_gdataset_test = labeled_gdataset[150:]
 
 print(type(labeled_gdataset))
-# labeled_gdataset = pd.concat([labeled_gdataset, labeled_gdataset], ignore_index=True)
-print(np.shape(labeled_gdataset))
+print("labeled_gdataset shape: ", np.shape(labeled_gdataset))
+print("labeled_gdataset_test shape: ", np.shape(labeled_gdataset_test))
+print("labeled_gdataset_train shape: ", np.shape(labeled_gdataset_train))
+
+labeled_gdataset_test = tf.data.Dataset.from_tensor_slices((list(labeled_gdataset_test['X']),
+                                                            list(labeled_gdataset_test['y'])))
+labeled_gdataset_test = (labeled_gdataset_test.shuffle(buffer_size=len(labeled_gdataset_test))
+                         .batch(1).prefetch(buffer_size=tf.data.AUTOTUNE))
 
 # labeled_gdataset = tf.data.Dataset.from_tensor_slices((list(labeled_gdataset['X']), list(labeled_gdataset['y'])))
 # labeled_gdataset = labeled_gdataset.shuffle(buffer_size=len(labeled_gdataset)).batch(5).prefetch(
@@ -200,6 +211,35 @@ class Augmentation:
         output = tf.where(flip_mask, flipped_data, data)
 
         return output
+
+    def add_sine(self, data, frequency=25.0, amplitude=0.75, probability=0.4):
+        """
+        Add a sine wave to a percentage of the 3D accelerometer data.
+        """
+        # Extract the time dimension
+        time_steps = tf.shape(data)[1]
+
+        # Generate a sine wave for the given frequency
+        time = tf.linspace(0.0, 1.0, time_steps)  # Normalize time range to [0, 1]
+        sine_wave = amplitude * tf.sin(2.0 * np.pi * frequency * time)  # Shape (time_steps,)
+
+        # Expand sine wave to match the data shape: (1, time_steps, 1)
+        sine_wave = tf.reshape(sine_wave, (1, time_steps, 1))
+
+        # Broadcast the sine wave across the batch and channel dimensions
+        sine_wave = tf.tile(sine_wave, [tf.shape(data)[0], 1, tf.shape(data)[2]])
+
+        # Create a random mask for applying the sine wave
+        batch_size = tf.shape(data)[0]
+        random_mask = tf.random.stateless_uniform((batch_size, 1, 1),
+                                                  seed=tf.constant([42, 24], dtype=tf.int32),
+                                                  minval=0.0, maxval=1.0)
+        sine_mask = random_mask < probability  # Mask for applying the sine wave
+
+        # Apply the sine wave only to windows selected by the mask
+        augmented_data = tf.where(sine_mask, data + sine_wave, data)
+
+        return augmented_data
 
     def random_channel_permutation(self, data):
         """
@@ -569,13 +609,14 @@ class Augmentation:
 
             return normalized
 
-    def get_augmenter(self):
+    def get_contrastive_augmenter(self):
         """Combine several augmentations into a single sequential model."""
         return keras.Sequential(
             [
                 # layers.Lambda(self.jitter),
                 layers.Lambda(self.left_to_right_flipping),
                 layers.Lambda(self.bidirectional_flipping),
+                # layers.Lambda(self.add_sine),
                 # layers.Lambda(self.random_channel_permutation),
                 layers.Lambda(self.rotate_axis),
                 layers.Lambda(self.add_gravity),
@@ -590,10 +631,31 @@ class Augmentation:
             ]
         )
 
+    def get_classification_augmenter(self):
+        return keras.Sequential(
+            [
+                # layers.Lambda(self.jitter),
+                layers.Lambda(self.left_to_right_flipping),
+                layers.Lambda(self.bidirectional_flipping),
+                # layers.Lambda(self.add_sine),
+                # layers.Lambda(self.random_channel_permutation),
+                layers.Lambda(self.rotate_axis),
+                layers.Lambda(self.add_gravity),
+                # layers.Lambda(self.slide_window),
+                # layers.Lambda(self.blockout),
+                # layers.Lambda(self.crop_and_resize),
+                # layers.Lambda(self.magnitude_warping),
+                # layers.Lambda(self.time_warping),
+                # layers.Lambda(self.random_smoothing),
+                # layers.Lambda(self.permute_segments),
+                self.CustomNormalizer(),
+            ]
+        )
+
 
 # Visualization function
 def visualize_augmentations(gdataset, augmentation, num_windows):
-    augmenter = augmentation.get_augmenter()
+    augmenter = augmentation.get_contrastive_augmenter()
 
     gdataset_np = next(iter(gdataset)).numpy()  # Convert from tensor to numpy array
 
@@ -630,7 +692,7 @@ augmentation = Augmentation()
 visualize_augmentations(gdataset, augmentation, num_windows=3)
 
 
-def augment_and_extend_dataset(df, get_augmenter, num_extensions=1):
+def augment_and_extend_dataset(df, get_contrastive_augmenter, num_extensions=1):
     """
     Augments the dataset and extends it by a specified number of times.
     """
@@ -640,7 +702,7 @@ def augment_and_extend_dataset(df, get_augmenter, num_extensions=1):
     y_original = tf.convert_to_tensor(df["y"].to_list(), dtype=tf.int32)
 
     # Get augmenter
-    augmenter = get_augmenter()
+    augmenter = get_contrastive_augmenter()
 
     # Initialize lists to store extended data
     X_combined = list(df["X"])  # Start with the original data
@@ -658,20 +720,20 @@ def augment_and_extend_dataset(df, get_augmenter, num_extensions=1):
     return extended_df
 
 
-num_extensions = labeled_dataset_size // 100 - 1
-labeled_gdataset_ext = augment_and_extend_dataset(labeled_gdataset, augmentation.get_augmenter,
-                                              num_extensions=num_extensions)
-print("shape of labeled_gdataset: ", np.shape(labeled_gdataset_ext))
+num_extensions = labeled_dataset_size // 150 - 1
+labeled_gdataset_train = augment_and_extend_dataset(labeled_gdataset_train, augmentation.get_contrastive_augmenter,
+                                                    num_extensions=num_extensions)
+print("shape of labeled_gdataset: ", np.shape(labeled_gdataset_train))
 
-labeled_gdataset_ext = tf.data.Dataset.from_tensor_slices((list(labeled_gdataset_ext['X']),
-                                                           list(labeled_gdataset_ext['y'])))
-labeled_gdataset_ext = (labeled_gdataset_ext.shuffle(buffer_size=len(labeled_gdataset_ext))
-                        .batch(labeled_gdataset_batch_size).prefetch(buffer_size=tf.data.AUTOTUNE))
+labeled_gdataset_train = tf.data.Dataset.from_tensor_slices((list(labeled_gdataset_train['X']),
+                                                             list(labeled_gdataset_train['y'])))
+labeled_gdataset_train = (labeled_gdataset_train.shuffle(buffer_size=len(labeled_gdataset_train))
+                          .batch(labeled_gdataset_batch_size).prefetch(buffer_size=tf.data.AUTOTUNE))
 
-print(labeled_gdataset_ext.element_spec)
+print(labeled_gdataset_train.element_spec)
 
 train_dataset = tf.data.Dataset.zip(
-    (gdataset, labeled_gdataset_ext)
+    (gdataset, labeled_gdataset_train)
 ).prefetch(buffer_size=tf.data.AUTOTUNE)
 
 """
@@ -734,8 +796,8 @@ class ContrastiveModel(keras.Model):
         super().__init__()
 
         self.temperature = temperature
-        self.contrastive_augmenter = augmentation.get_augmenter()
-        self.classification_augmenter = augmentation.get_augmenter()
+        self.contrastive_augmenter = augmentation.get_contrastive_augmenter()
+        self.classification_augmenter = augmentation.get_classification_augmenter()
         self.shift_windows = augmentation.shift_windows()
         self.encoder = embeddings_function(M)
 
@@ -763,6 +825,7 @@ class ContrastiveModel(keras.Model):
         self.linear_probe = keras.Sequential(
             [
                 layers.Input(shape=(M,)),
+                layers.Dropout(0.1),
                 layers.Dense(2, kernel_regularizer=keras.regularizers.L2(1e-4))
             ],
             name="linear_probe",
@@ -844,8 +907,8 @@ class ContrastiveModel(keras.Model):
         # NT-Xent loss (normalized temperature-scaled cross entropy)
 
         # Cosine similarity: the dot product of the l2-normalized feature vectors
-        projections_1 = ops.normalize(projections_1, axis=1)
-        projections_2 = ops.normalize(projections_2, axis=1)
+        projections_1 = tf.nn.l2_normalize(projections_1, axis=1)
+        projections_2 = tf.nn.l2_normalize(projections_2, axis=1)
         similarities = (
                 ops.matmul(projections_1, ops.transpose(projections_2)) / self.temperature
         )
@@ -920,7 +983,7 @@ class ContrastiveModel(keras.Model):
             # projections_2 = self.projection_head(features_2, training=True)
 
             # Compute the contrastive loss
-            contrastive_loss = self.contrastive_loss_with_regularization(features_1, features_2)
+            contrastive_loss = self.contrastive_loss(features_1, features_2)
 
             # # SIMILARITY METRICS
             # tf.print("Current index: ", self.current_index)
@@ -950,7 +1013,7 @@ class ContrastiveModel(keras.Model):
         with tf.GradientTape() as tape:
             # the encoder is used in inference mode here to avoid regularization
             # and updating the batch normalization paramers if they are used
-            features = self.encoder(preprocessed_data, training=True)
+            features = self.encoder(preprocessed_data, training=False)
             class_logits = self.linear_probe(features, training=True)
             probe_loss = self.probe_loss(labels, class_logits)
 
@@ -975,6 +1038,7 @@ class ContrastiveModel(keras.Model):
         features = self.encoder(preprocessed_data, training=False)
         class_logits = self.linear_probe(features, training=False)
         probe_loss = self.probe_loss(labels, class_logits)
+
         self.probe_loss_tracker.update_state(probe_loss)
         self.probe_accuracy.update_state(labels, class_logits)
 
@@ -985,9 +1049,19 @@ class ContrastiveModel(keras.Model):
         """
         Plots contrastive loss per epoch.
         """
+        # Plot Contrastive Loss
         plt.figure(figsize=(6, 5))
         plt.plot(pretraining_history.history["c_loss"], label="Contrastive Loss", color='blue')
         plt.title("Contrastive Loss per Epoch")
+        plt.xlabel("Epochs")
+        plt.ylabel("Loss")
+        plt.legend()
+        plt.show()
+
+        # Plot Validation Loss
+        plt.figure(figsize=(6, 5))
+        plt.plot(pretraining_history.history["val_p_loss"], label="Validation Loss", color='red')
+        plt.title("Validation Loss per Epoch")
         plt.xlabel("Epochs")
         plt.ylabel("Loss")
         plt.legend()
@@ -1010,7 +1084,7 @@ class ContrastiveModel(keras.Model):
 pretraining_model = ContrastiveModel()
 pretraining_model.compile(
     contrastive_optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
-    probe_optimizer=keras.optimizers.Adam(learning_rate=1e-4, beta_2=0.99, weight_decay=1e-5)
+    probe_optimizer=keras.optimizers.Adam(learning_rate=1e-4, beta_2=0.95, weight_decay=1e-5),
 )
 
 early_stopping = callbacks.EarlyStopping(
@@ -1024,11 +1098,11 @@ early_stopping = callbacks.EarlyStopping(
 
 checkpoint = callbacks.ModelCheckpoint(
     filepath="simclr_best_model.weights.h5",
-    monitor="c_loss",
+    monitor="val_p_loss",
     mode="min",
     save_best_only=True,
     save_weights_only=True,
-    verbose=0
+    verbose=1
 )
 
 
@@ -1045,7 +1119,7 @@ def lr_schedule(epoch, lr):
 lr_scheduler = callbacks.LearningRateScheduler(lr_schedule)
 
 pretraining_history = pretraining_model.fit(
-    train_dataset, epochs=num_epochs, validation_data=labeled_gdataset_ext, batch_size=batch_size,
+    train_dataset, epochs=num_epochs, validation_data=labeled_gdataset_test, batch_size=batch_size,
     callbacks=[checkpoint, lr_scheduler]
 )
 
@@ -1143,11 +1217,9 @@ def visualize_embeddings(embeddings, labels, n_components=2, perplexity=5, learn
         raise ValueError("n_components must be 2 or 3 for visualization.")
 
 
-
 labeled_gdataset = tf.data.Dataset.from_tensor_slices((list(labeled_gdataset['X']), list(labeled_gdataset['y'])))
 labeled_gdataset = (labeled_gdataset.shuffle(buffer_size=len(labeled_gdataset)).batch(10)
                     .prefetch(buffer_size=tf.data.AUTOTUNE))
-
 
 # Use the function to get embeddings and visualize them
 embeddings, labels = get_labeled_embeddings(pretraining_model, labeled_gdataset)

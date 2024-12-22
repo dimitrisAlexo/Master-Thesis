@@ -262,7 +262,7 @@ class MILModel(keras.Model):
         self.use_gated = use_gated
 
         # Define encoder optimizer
-        self.embeddings_learning_rate = 1e-5
+        self.embeddings_learning_rate = 1e-4
         self.optimizer_embeddings = keras.optimizers.Adam(learning_rate=self.embeddings_learning_rate)
 
         # Define model components
@@ -328,7 +328,7 @@ class MILModel(keras.Model):
         try:
             self.embeddings_function.build(input_shape=(None, self.Ws, self.C))
             self.embeddings_function.load_weights("embeddings.weights.h5")
-            self.embeddings_function.trainable = True  # Freeze encoder
+            self.embeddings_function.trainable = False  # Freeze encoder
             print("Successfully loaded SimCLR weights into encoder.")
         except Exception as e:
             print(f"Failed to load SimCLR weights: {e}")
@@ -354,6 +354,14 @@ class MILModel(keras.Model):
     #
     #     # Return a dictionary mapping metric names to their current value
     #     return {m.name: m.result() for m in self.metrics}
+
+    def freeze_encoder(self):
+        """Freeze the encoder by setting trainable=False."""
+        self.embeddings_function.trainable = False
+
+    def unfreeze_encoder(self):
+        """Unfreeze the encoder by setting trainable=True."""
+        self.embeddings_function.trainable = True
 
     def train_step(self, data):
         # Unpack data
@@ -390,8 +398,14 @@ class MILModel(keras.Model):
         # print("Length of other_grads: ", len(other_grads))
         # print("other_grads: ", other_grads)
 
+        # Print the gradient norms for monitoring
+        # print("Embeddings Gradient Norm:", tf.linalg.global_norm(embeddings_grads))
+        # print("Other Parameters Gradient Norm:", tf.linalg.global_norm(other_grads))
+
         # Apply gradients with different learning rates
-        self.optimizer_embeddings.apply_gradients(zip(embeddings_grads, embeddings_vars))
+        if embeddings_vars:
+            self.optimizer_embeddings.apply_gradients(zip(embeddings_grads, embeddings_vars))
+
         self.optimizer_other.apply_gradients(zip(other_grads, other_vars))
 
         # Manually update metrics
@@ -454,12 +468,16 @@ def train(train_dataset, val_dataset, model):
     clear_memory = ClearMemory()
     lr_scheduler = callbacks.LearningRateScheduler(lr_schedule)
 
+    model.freeze_encoder()
+
     # Compile model.
     model.compile(
+        # optimizer=optimizers.Adam(learning_rate=1e-3, beta_2=0.95, weight_decay=1e-5, clipnorm=1.0),
         optimizer=optimizers.Adam(learning_rate=5e-4),
         loss="sparse_categorical_crossentropy",
         metrics=["accuracy"],
-        auto_scale_loss=True
+        auto_scale_loss=True,
+        run_eagerly=False
     )
 
     # Fit model.
@@ -471,6 +489,30 @@ def train(train_dataset, val_dataset, model):
         callbacks=[lr_scheduler, clear_memory],
         verbose=1,
     )
+
+    # print("Finetuning model...")
+    #
+    # model.unfreeze_encoder()
+    #
+    # # Compile model.
+    # model.compile(
+    #     # optimizer=optimizers.Adam(learning_rate=1e-3, beta_2=0.95, weight_decay=1e-5, clipnorm=1.0),
+    #     optimizer=optimizers.Adam(learning_rate=5e-4),
+    #     loss="sparse_categorical_crossentropy",
+    #     metrics=["accuracy"],
+    #     auto_scale_loss=True,
+    #     run_eagerly=False
+    # )
+    #
+    # # Fit model.
+    # model.fit(
+    #     train_dataset,
+    #     validation_data=val_dataset,
+    #     epochs=50,
+    #     batch_size=batch_size,
+    #     callbacks=[lr_scheduler, clear_memory],
+    #     verbose=1,
+    # )
 
     # Load best weights.
     # print("Loading best weights...")
@@ -603,11 +645,10 @@ def rkf_evaluate(data, k, n_repeats):
 
     # Initialize RepeatedKFold
     rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats)
-    overall_accuracies = []
-    overall_sensitivities = []
-    overall_specificities = []
-    overall_precisions = []
-    overall_f1_scores = []
+    overall_tn = 0
+    overall_fp = 0
+    overall_fn = 0
+    overall_tp = 0
 
     all_true_labels = []
     all_predicted_labels = []
@@ -677,18 +718,16 @@ def rkf_evaluate(data, k, n_repeats):
         print("precision:", precision)
         print("f1_score:", f1_score)
 
-        overall_accuracies.append(accuracy)
-        overall_sensitivities.append(sensitivity)
-        overall_specificities.append(specificity)
-        overall_precisions.append(precision)
-        overall_f1_scores.append(f1_score)
+        overall_tn += tn
+        overall_fp += fp
+        overall_fn += fn
+        overall_tp += tp
 
     # Calculate the final accuracy across all folds and repetitions
-    final_accuracy = np.nanmean(overall_accuracies)
-    final_sensitivity = np.nanmean(overall_sensitivities)
-    final_specificity = np.nanmean(overall_specificities)
-    final_precision = np.nanmean(overall_precisions)
-    final_f1_score = np.nanmean(overall_f1_scores)
+    final_accuracy, final_sensitivity, final_specificity, final_precision, final_f1_score = calculate_metrics(
+        overall_tn, overall_fp, overall_fn, overall_tp
+    )
+
     print(f"Final average accuracy across all subjects: {final_accuracy * 100:.2f}%")
     print(f"Final average sensitivity across all subjects: {final_sensitivity * 100:.2f}%")
     print(f"Final average specificity across all subjects: {final_specificity * 100:.2f}%")
@@ -721,12 +760,11 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
     y_train = data['y_train'].tolist()
 
     # Initialize RepeatedKFold
-    rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats, random_state=42)
-    overall_accuracies = []
-    overall_sensitivities = []
-    overall_specificities = []
-    overall_precisions = []
-    overall_f1_scores = []
+    rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats)
+    overall_tn = 0
+    overall_fp = 0
+    overall_fn = 0
+    overall_tp = 0
 
     all_true_labels = []
     all_predicted_labels = []
@@ -742,7 +780,7 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
         test_labels = [y_train[i] for i in test_index]
 
         # Further split train_val into train and val
-        rkf_inner = RepeatedKFold(n_splits=k - 1, n_repeats=1, random_state=42)
+        rkf_inner = RepeatedKFold(n_splits=k - 1, n_repeats=1)
         train_index, val_index = next(rkf_inner.split(train_val_bags))
 
         # Prepare the training, validation, and testing datasets
@@ -767,7 +805,7 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
 
         # Create TensorFlow datasets
         train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
-        train_dataset = train_dataset.shuffle(buffer_size=10 * len(train_data), seed=42).batch(batch_size).prefetch(
+        train_dataset = train_dataset.shuffle(buffer_size=10 * len(train_data)).batch(batch_size).prefetch(
             buffer_size=tf.data.AUTOTUNE)
 
         val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
@@ -817,18 +855,15 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
         print("precision:", precision)
         print("f1_score:", f1_score)
 
-        overall_accuracies.append(accuracy)
-        overall_sensitivities.append(sensitivity)
-        overall_specificities.append(specificity)
-        overall_precisions.append(precision)
-        overall_f1_scores.append(f1_score)
+        overall_tn += tn
+        overall_fp += fp
+        overall_fn += fn
+        overall_tp += tp
 
     # Calculate the final accuracy across all folds and repetitions
-    final_accuracy = np.nanmean(overall_accuracies)
-    final_sensitivity = np.nanmean(overall_sensitivities)
-    final_specificity = np.nanmean(overall_specificities)
-    final_precision = np.nanmean(overall_precisions)
-    final_f1_score = np.nanmean(overall_f1_scores)
+    final_accuracy, final_sensitivity, final_specificity, final_precision, final_f1_score = calculate_metrics(
+        overall_tn, overall_fp, overall_fn, overall_tp
+    )
     print(f"Final average accuracy across all subjects: {final_accuracy * 100:.2f}%")
     print(f"Final average sensitivity across all subjects: {final_sensitivity * 100:.2f}%")
     print(f"Final average specificity across all subjects: {final_specificity * 100:.2f}%")

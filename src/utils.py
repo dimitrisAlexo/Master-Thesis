@@ -132,13 +132,17 @@ def filter_data(subject, E_thres, Kt):
     return np.array(bag)
 
 
-def form_unlabeled_dataset(tremor_data, E_thres, Kt):
+def form_unlabeled_dataset(tremor_gdata, tremor_sdata, E_thres, Kt):
+    print("Length of tremor_gdata: ", len(tremor_gdata))
+    tremor_gdata = {key: value for key, value in tremor_gdata.items() if key not in tremor_sdata}
+    print("Length of tremor_gdata: ", len(tremor_gdata))
+
     data = []
     counter = 0
 
-    for subject_id in tremor_data.keys():
-        if isinstance(tremor_data[subject_id][1], dict):
-            bag = filter_data(tremor_data[subject_id], E_thres, Kt)
+    for subject_id in tremor_gdata.keys():
+        if isinstance(tremor_gdata[subject_id][1], dict):
+            bag = filter_data(tremor_gdata[subject_id], E_thres, Kt)
             if bag is not None:
                 counter += 1
                 print(counter)

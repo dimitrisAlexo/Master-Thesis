@@ -9,11 +9,18 @@ start = time.time()
 sdata_path = os.path.join('..', 'data', 'tremor_sdata.pickle')
 gdata_path = os.path.join('..', 'data', 'tremor_gdata.pickle')
 tremor_sdata = unpickle_data(sdata_path)
+tremor_gdata = unpickle_data(gdata_path)
 
 E_thres = 0.15
 Kt = 100
 
-sdataset = form_dataset(tremor_sdata, E_thres, Kt, 'tremor_manual', 'tremor_manual')
+# sdataset = form_dataset(tremor_sdata, E_thres, Kt, 'tremor_manual', 'tremor_manual')
+
+with open("sdataset.pickle", 'rb') as f:
+    print("Loading sdataset...")
+    sdataset = pkl.load(f)
+
+sdataset['X'] = sdataset['X'].apply(lambda window: normalize_window(window))
 
 print(sdataset)
 
@@ -53,10 +60,20 @@ def plot_accelerometer_windows(X, subject_idx, save_fig=False):
 
     return
 
-X = sdataset['X']
-subject_idx = 27
 
-# plot_accelerometer_windows(X, subject_idx, save_fig=False)
+X = sdataset['X']
+
+# plot_accelerometer_windows(X, 2, save_fig=True)
+# plot_accelerometer_windows(X, 4, save_fig=True)
+# plot_accelerometer_windows(X, 6, save_fig=True)
+# plot_accelerometer_windows(X, 11, save_fig=True)
+# plot_accelerometer_windows(X, 12, save_fig=True)
+#
+# plot_accelerometer_windows(X, 24, save_fig=True)
+# plot_accelerometer_windows(X, 36, save_fig=True)
+# plot_accelerometer_windows(X, 8, save_fig=True)
+# plot_accelerometer_windows(X, 9, save_fig=True)
+# plot_accelerometer_windows(X, 10, save_fig=True)
 
 # Initialize the empty DataFrame
 windows_dataset = pd.DataFrame(columns=['X', 'y'])
@@ -123,6 +140,36 @@ windows_dataset = label_windows(windows_dataset, X, subject_idx=0,
 windows_dataset = label_windows(windows_dataset, X, subject_idx=1,
                                 window_indices=[5, 16, 18, 19, 25, 27, 28, 44, 45, 60], label=1)
 
+windows_dataset = label_windows(windows_dataset, X, subject_idx=2,
+                                window_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], label=0)
+
+windows_dataset = label_windows(windows_dataset, X, subject_idx=4,
+                                window_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], label=0)
+
+windows_dataset = label_windows(windows_dataset, X, subject_idx=6,
+                                window_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], label=0)
+
+windows_dataset = label_windows(windows_dataset, X, subject_idx=11,
+                                window_indices=[0, 1, 2, 3, 4, 62, 63, 64, 65, 66], label=0)
+
+windows_dataset = label_windows(windows_dataset, X, subject_idx=12,
+                                window_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], label=0)
+
+windows_dataset = label_windows(windows_dataset, X, subject_idx=24,
+                                window_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], label=1)
+
+windows_dataset = label_windows(windows_dataset, X, subject_idx=36,
+                                window_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], label=1)
+
+windows_dataset = label_windows(windows_dataset, X, subject_idx=8,
+                                window_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], label=1)
+
+windows_dataset = label_windows(windows_dataset, X, subject_idx=9,
+                                window_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], label=1)
+
+windows_dataset = label_windows(windows_dataset, X, subject_idx=10,
+                                window_indices=[0, 1, 3, 4, 5, 6, 7, 8, 9, 10], label=1)
+
 # Save the dataset to a CSV file
 windows_dataset.to_pickle('labeled_windows_dataset.pickle')
 
@@ -165,5 +212,21 @@ print(windows_dataset)
 # sdataset = form_dataset(tremor_data, E_thres, Kt, 'tremor_manual', 'tremor_manual')
 #
 # print(sdataset)
+
+# print("Tremor subjects: ", tremor_sdata.keys())
+# print(len(tremor_sdata.keys()))
+# print("Tremor subjects: ", tremor_gdata.keys())
+# print(len(tremor_gdata.keys()))
+#
+# count = 0
+# for key in tremor_gdata.keys():
+#     if key in tremor_sdata.keys():
+#         print(key)
+#         count += 1
+#
+# print("count: ", count)
+#
+# print("sdataset subject: ", tremor_sdata['6cc41389d3e9aea9'][3])
+# print("gdataset subject: ", tremor_gdata['6cc41389d3e9aea9'][3])
 
 print(time.time() - start)
