@@ -58,7 +58,7 @@ unlabeled_dataset_size = 5120
 labeled_dataset_size = 450
 
 M = 64
-E_thres = 0.15 * 2
+E_thres = 0.15 * 3
 Kt = 100
 batch_size = 512
 labeled_gdataset_batch_size = 45
@@ -99,6 +99,8 @@ with open("labeled_windows_dataset.pickle", 'rb') as f:
 
 labeled_gdataset = labeled_gdataset.sample(frac=1).reset_index(drop=True)
 
+print(labeled_gdataset)
+
 labeled_gdataset_train = labeled_gdataset[:150]
 labeled_gdataset_test = labeled_gdataset[150:]
 
@@ -128,7 +130,7 @@ labeled_gdataset_test = (labeled_gdataset_test.shuffle(buffer_size=len(labeled_g
 
 
 class Augmentation:
-    def __init__(self, overlap=0.95,
+    def __init__(self, overlap=0.90,
                  jitter_factor=0.1,
                  flip_probability=0.5,
                  rotation_angle=np.pi,
@@ -137,7 +139,7 @@ class Augmentation:
                  block_size_ratio=0.1,
                  crop_ratio=0.1,
                  lambda_amp=0.1,
-                 n_perm_seg=5):
+                 n_perm_seg=10):
         # Set default parameters for each augmentation
         self.overlap = overlap
         self.jitter_factor = jitter_factor
@@ -573,7 +575,7 @@ class Augmentation:
         Extracts two overlapping windows of size (500, 3) from each sample in the input data.
         """
         batch_size, time_steps, channels = tf.shape(data)[0], tf.shape(data)[1], tf.shape(data)[2]
-        window_size = 500
+        window_size = 1000
         overlap_size = int(self.overlap * window_size)
         max_start = time_steps - window_size - (window_size - overlap_size)
 
@@ -640,14 +642,14 @@ class Augmentation:
                 # layers.Lambda(self.add_sine),
                 # layers.Lambda(self.random_channel_permutation),
                 layers.Lambda(self.rotate_axis),
-                layers.Lambda(self.add_gravity),
+                # layers.Lambda(self.add_gravity),
                 # layers.Lambda(self.slide_window),
                 # layers.Lambda(self.blockout),
                 # layers.Lambda(self.crop_and_resize),
                 # layers.Lambda(self.magnitude_warping),
                 # layers.Lambda(self.time_warping),
                 # layers.Lambda(self.random_smoothing),
-                # layers.Lambda(self.permute_segments),
+                layers.Lambda(self.permute_segments),
                 self.CustomNormalizer(),
             ]
         )
@@ -1084,7 +1086,7 @@ class ContrastiveModel(keras.Model):
 pretraining_model = ContrastiveModel()
 pretraining_model.compile(
     contrastive_optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
-    probe_optimizer=keras.optimizers.Adam(learning_rate=1e-4, beta_2=0.95, weight_decay=1e-5),
+    probe_optimizer=keras.optimizers.Adam(learning_rate=1e-4),
 )
 
 early_stopping = callbacks.EarlyStopping(

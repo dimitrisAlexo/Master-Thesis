@@ -63,6 +63,18 @@ def plot_accelerometer_windows(X, subject_idx, save_fig=False):
 
 X = sdataset['X']
 
+# plot_accelerometer_windows(X, 27, save_fig=True)
+# plot_accelerometer_windows(X, 16, save_fig=True)
+# plot_accelerometer_windows(X, 41, save_fig=True)
+# plot_accelerometer_windows(X, 13, save_fig=True)
+# plot_accelerometer_windows(X, 0, save_fig=True)
+#
+# plot_accelerometer_windows(X, 17, save_fig=True)
+# plot_accelerometer_windows(X, 42, save_fig=True)
+# plot_accelerometer_windows(X, 25, save_fig=True)
+# plot_accelerometer_windows(X, 5, save_fig=True)
+# plot_accelerometer_windows(X, 1, save_fig=True)
+#
 # plot_accelerometer_windows(X, 2, save_fig=True)
 # plot_accelerometer_windows(X, 4, save_fig=True)
 # plot_accelerometer_windows(X, 6, save_fig=True)
@@ -102,11 +114,11 @@ X = sdataset['X']  # Assuming 'X' contains the accelerometer data of all subject
 
 # 1. From subject 27 add windows with label 0
 windows_dataset = label_windows(windows_dataset, X, subject_idx=27,
-                                window_indices=[3, 6, 7, 10, 26, 29, 30, 31, 76, 77], label=0)
+                                window_indices=[3, 6, 7, 10, 26, 27, 30, 31, 76, 66], label=0)
 
 # 2. From subject 17 add windows with label 1
 windows_dataset = label_windows(windows_dataset, X, subject_idx=17,
-                                window_indices=[45, 48, 52, 53, 56, 57, 68, 62, 63, 81], label=1)
+                                window_indices=[20, 21, 22, 26, 28, 30, 31, 32, 33, 34], label=1)
 
 # 3. From subject 16 add windows with label 0
 windows_dataset = label_windows(windows_dataset, X, subject_idx=16, window_indices=[4, 5, 6, 7, 10, 11, 12, 27, 28, 33],
@@ -114,7 +126,7 @@ windows_dataset = label_windows(windows_dataset, X, subject_idx=16, window_indic
 
 # 4. From subject 42 add windows with label 1
 windows_dataset = label_windows(windows_dataset, X, subject_idx=42,
-                                window_indices=[2, 5, 6, 12, 15, 23, 20, 45, 64, 90], label=1)
+                                window_indices=[2, 4, 5, 6, 9, 13, 14, 15, 53, 64], label=1)
 
 # 5. From subject 41 add windows with label 0
 windows_dataset = label_windows(windows_dataset, X, subject_idx=41,
@@ -122,15 +134,15 @@ windows_dataset = label_windows(windows_dataset, X, subject_idx=41,
 
 # 6. From subject 25 add windows with label 1
 windows_dataset = label_windows(windows_dataset, X, subject_idx=25,
-                                window_indices=[25, 27, 33, 34, 35, 44, 72, 73, 74, 84], label=1)
+                                window_indices=[5, 14, 15, 17, 22, 41, 43, 52, 69, 71], label=1)
 
 # 7. From subject 13 add windows with label 0
 windows_dataset = label_windows(windows_dataset, X, subject_idx=13,
-                                window_indices=[21, 23, 25, 0, 1, 54, 55, 73, 74, 67], label=0)
+                                window_indices=[0, 1, 2, 3, 4, 27, 28, 29, 30, 31], label=0)
 
 # 8. From subject 5 add windows with label 1
 windows_dataset = label_windows(windows_dataset, X, subject_idx=5,
-                                window_indices=[6, 26, 34, 59, 70, 87, 83, 88, 29, 78], label=1)
+                                window_indices=[25, 26, 33, 50, 61, 77, 83, 94, 95, 26], label=1)
 
 # 9. From subject 0 add windows with label 0
 windows_dataset = label_windows(windows_dataset, X, subject_idx=0,
@@ -138,7 +150,7 @@ windows_dataset = label_windows(windows_dataset, X, subject_idx=0,
 
 # 10. From subject 1 add windows with label 1
 windows_dataset = label_windows(windows_dataset, X, subject_idx=1,
-                                window_indices=[5, 16, 18, 19, 25, 27, 28, 44, 45, 60], label=1)
+                                window_indices=[7, 8, 9, 12, 13, 14, 15, 16, 17, 18], label=1)
 
 windows_dataset = label_windows(windows_dataset, X, subject_idx=2,
                                 window_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], label=0)
@@ -150,7 +162,7 @@ windows_dataset = label_windows(windows_dataset, X, subject_idx=6,
                                 window_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], label=0)
 
 windows_dataset = label_windows(windows_dataset, X, subject_idx=11,
-                                window_indices=[0, 1, 2, 3, 4, 62, 63, 64, 65, 66], label=0)
+                                window_indices=[0, 1, 2, 3, 4, 23, 24, 25, 26, 27], label=0)
 
 windows_dataset = label_windows(windows_dataset, X, subject_idx=12,
                                 window_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], label=0)
@@ -168,7 +180,7 @@ windows_dataset = label_windows(windows_dataset, X, subject_idx=9,
                                 window_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], label=1)
 
 windows_dataset = label_windows(windows_dataset, X, subject_idx=10,
-                                window_indices=[0, 1, 3, 4, 5, 6, 7, 8, 9, 10], label=1)
+                                window_indices=[0, 1, 2, 3, 4, 5, 6, 8, 9, 10], label=1)
 
 # Save the dataset to a CSV file
 windows_dataset.to_pickle('labeled_windows_dataset.pickle')

@@ -157,41 +157,6 @@ class MILAttentionLayer(layers.Layer):
         return ops.tensordot(instance, self.w_weight_params, axes=1)
 
 
-# def embeddings_function(M):
-#     return keras.Sequential(
-#         [
-#             # Layer 1
-#             layers.ZeroPadding1D(padding=1),
-#             layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
-#             layers.LeakyReLU(negative_slope=0.2),
-#             layers.MaxPooling1D(pool_size=2),
-#
-#             # Layer 2
-#             layers.ZeroPadding1D(padding=1),
-#             layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
-#             layers.LeakyReLU(negative_slope=0.2),
-#             layers.MaxPooling1D(pool_size=2),
-#
-#             # Layer 3
-#             layers.ZeroPadding1D(padding=1),
-#             layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
-#             layers.LeakyReLU(negative_slope=0.2),
-#             layers.MaxPooling1D(pool_size=2),
-#
-#             # Layer 4
-#             layers.ZeroPadding1D(padding=1),
-#             layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
-#             layers.LeakyReLU(negative_slope=0.2),
-#             layers.MaxPooling1D(pool_size=2),
-#
-#             # Flatten and Dense layer to get M-dimensional output
-#             layers.Flatten(),
-#             layers.Dense(M),
-#         ],
-#         name="embeddings_function",
-#     )
-
-
 def embeddings_function(M):
     return keras.Sequential(
         [
@@ -262,7 +227,7 @@ class MILModel(keras.Model):
         self.use_gated = use_gated
 
         # Define encoder optimizer
-        self.embeddings_learning_rate = 1e-4
+        self.embeddings_learning_rate = 5e-4
         self.optimizer_embeddings = keras.optimizers.Adam(learning_rate=self.embeddings_learning_rate)
 
         # Define model components
@@ -490,29 +455,29 @@ def train(train_dataset, val_dataset, model):
         verbose=1,
     )
 
-    # print("Finetuning model...")
-    #
-    # model.unfreeze_encoder()
-    #
-    # # Compile model.
-    # model.compile(
-    #     # optimizer=optimizers.Adam(learning_rate=1e-3, beta_2=0.95, weight_decay=1e-5, clipnorm=1.0),
-    #     optimizer=optimizers.Adam(learning_rate=5e-4),
-    #     loss="sparse_categorical_crossentropy",
-    #     metrics=["accuracy"],
-    #     auto_scale_loss=True,
-    #     run_eagerly=False
-    # )
-    #
-    # # Fit model.
-    # model.fit(
-    #     train_dataset,
-    #     validation_data=val_dataset,
-    #     epochs=50,
-    #     batch_size=batch_size,
-    #     callbacks=[lr_scheduler, clear_memory],
-    #     verbose=1,
-    # )
+    print("Finetuning model...")
+
+    model.unfreeze_encoder()
+
+    # Compile model.
+    model.compile(
+        # optimizer=optimizers.Adam(learning_rate=1e-3, beta_2=0.95, weight_decay=1e-5, clipnorm=1.0),
+        optimizer=optimizers.Adam(learning_rate=1e-3),
+        loss="sparse_categorical_crossentropy",
+        metrics=["accuracy"],
+        auto_scale_loss=True,
+        run_eagerly=False
+    )
+
+    # Fit model.
+    model.fit(
+        train_dataset,
+        validation_data=val_dataset,
+        epochs=50,
+        batch_size=batch_size,
+        callbacks=[lr_scheduler, clear_memory],
+        verbose=1,
+    )
 
     # Load best weights.
     # print("Loading best weights...")
@@ -525,11 +490,12 @@ def train(train_dataset, val_dataset, model):
 # sdata_path = os.path.join('..', 'data', 'tremor_sdata.pickle')
 # tremor_sdata = unpickle_data(sdata_path)
 
-E_thres = 0.15
+E_thres = 0.15 * 2
 Kt = 100
 num_epochs = 50
 batch_size = 1
 # {'updrs16', 'updrs20', 'updrs21', 'tremor_manual'}
+# print("Forming dataset...")
 # sdataset = form_dataset(tremor_sdata, E_thres, Kt, 'tremor_manual', 'tremor_manual')
 
 with open("sdataset.pickle", 'rb') as f:

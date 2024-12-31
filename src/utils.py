@@ -39,18 +39,22 @@ def calculate_metrics(tn, fp, fn, tp):
 def create_bag(subject, E_thres, Kt):
     bag = []
     for session in subject[3]:
+        num_pairs = session.shape[0] // 2
+        session = np.concatenate(
+            [session[2 * i:2 * i + 2].reshape(1, 1000, 3) for i in range(num_pairs)], axis=0
+        )
         filtered_session = [segment for segment in session if calculate_energy(segment) > E_thres]
         if len(filtered_session) >= 2:
             bag.extend([segment for segment in filtered_session])
     bag.sort(key=lambda segment: calculate_energy(segment), reverse=True)
     bag = bag[:Kt]
 
-    if len(bag) < min(30, Kt):
+    if len(bag) < min(10, Kt):
         return None
 
     # Zero-padding if less than Kt segments
     if len(bag) < Kt:
-        padding = [np.zeros((500, 3)) for _ in range(Kt - len(bag))]
+        padding = [np.zeros((1000, 3)) for _ in range(Kt - len(bag))]
         bag.extend(padding)
 
     return np.array(bag)
@@ -113,9 +117,9 @@ def filter_data(subject, E_thres, Kt):
         # plot_sample(session[0])
         # plot_sample(session[1])
         # time.sleep(5)
-        num_pairs = session.shape[0] // 2
+        num_pairs = session.shape[0] // 3
         session = np.concatenate(
-            [session[2 * i:2 * i + 2].reshape(1, 1000, 3) for i in range(num_pairs)], axis=0
+            [session[3 * i:3 * i + 3].reshape(1, 1500, 3) for i in range(num_pairs)], axis=0
         )
         # print("Session end: ", np.shape(session))
         # plot_sample(session[0])
@@ -126,7 +130,7 @@ def filter_data(subject, E_thres, Kt):
     bag.sort(key=lambda segment: calculate_energy(segment), reverse=True)
     bag = bag[:Kt]
 
-    if len(bag) < Kt:
+    if len(bag) < 10:
         return None
 
     return np.array(bag)
