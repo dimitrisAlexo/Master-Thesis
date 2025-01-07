@@ -22,7 +22,7 @@ dependencies:
   - xz=5.4.6=h5eee18b_1
   - zlib=1.2.13=h5eee18b_1
   - pip:
-      - absl-py==2.1.0
+      - absl-py==1.4.0
       - anyio==4.7.0
       - argon2-cffi==23.1.0
       - argon2-cffi-bindings==21.2.0
@@ -31,17 +31,19 @@ dependencies:
       - asttokens==3.0.0
       - astunparse==1.6.3
       - async-lru==2.0.4
-      - attrs==24.2.0
+      - attrs==23.1.0
       - babel==2.16.0
       - beautifulsoup4==4.12.3
       - black==24.10.0
       - bleach==6.2.0
       - boto3==1.35.76
       - botocore==1.35.76
+      - cachetools==5.5.0
       - certifi==2024.8.30
       - cffi==1.17.1
       - charset-normalizer==3.4.0
       - click==8.1.7
+      - cloudpickle==3.1.0
       - comm==0.2.2
       - contourpy==1.3.0
       - cycler==0.12.1
@@ -49,6 +51,7 @@ dependencies:
       - decorator==5.1.1
       - defusedxml==0.7.1
       - dm-tree==0.1.8
+      - dp-accounting==0.4.3
       - etils==1.5.2
       - exceptiongroup==1.2.2
       - executing==2.1.0
@@ -58,8 +61,14 @@ dependencies:
       - fqdn==1.5.1
       - fsspec==2024.10.0
       - gast==0.6.0
+      - google-auth==2.37.0
+      - google-auth-oauthlib==1.0.0
       - google-pasta==0.2.0
+      - google-vizier==0.1.11
+      - googleapis-common-protos==1.61.0
+      - greenlet==3.1.1
       - grpcio==1.68.1
+      - grpcio-tools==1.62.3
       - h11==0.14.0
       - h5py==3.12.1
       - httpcore==1.0.7
@@ -71,6 +80,8 @@ dependencies:
       - ipython==8.18.1
       - ipywidgets==8.1.5
       - isoduration==20.11.0
+      - jax==0.4.14
+      - jaxlib==0.4.14
       - jedi==0.19.2
       - jinja2==3.1.4
       - jmespath==1.0.1
@@ -92,7 +103,7 @@ dependencies:
       - jupyterlab-server==2.27.3
       - jupyterlab-widgets==3.0.13
       - kagglehub==0.3.4
-      - keras==3.0.5
+      - keras==2.14.0
       - keras-core==0.1.7
       - keras-cv==0.9.0
       - keras-hub==0.18.1
@@ -109,7 +120,8 @@ dependencies:
       - mdurl==0.1.2
       - mdx-truly-sane-lists==1.3
       - mistune==3.0.2
-      - ml-dtypes==0.3.2
+      - ml-dtypes==0.2.0
+      - mpmath==1.3.0
       - mypy-extensions==1.0.0
       - namex==0.0.8
       - nbclient==0.10.1
@@ -119,9 +131,11 @@ dependencies:
       - notebook==7.3.1
       - notebook-shim==0.2.4
       - numpy==1.25.2
+      - oauthlib==3.2.2
       - opt-einsum==3.4.0
+      - optree==0.13.1
       - overrides==7.7.0
-      - packaging==24.2
+      - packaging==22.0
       - pandas==2.2.3
       - pandocfilters==1.5.1
       - parso==0.8.4
@@ -129,13 +143,16 @@ dependencies:
       - pexpect==4.9.0
       - pillow==11.0.0
       - platformdirs==4.3.6
+      - portpicker==1.6.0
       - prometheus-client==0.21.1
       - promise==2.3
       - prompt-toolkit==3.0.48
-      - protobuf==3.20.3
+      - protobuf==4.25.5
       - psutil==5.9.8
       - ptyprocess==0.7.0
       - pure-eval==0.2.3
+      - pyasn1==0.6.1
+      - pyasn1-modules==0.4.1
       - pycparser==2.22
       - pydot==3.0.3
       - pygments==2.18.0
@@ -148,10 +165,12 @@ dependencies:
       - referencing==0.35.1
       - regex==2024.11.6
       - requests==2.32.3
+      - requests-oauthlib==2.0.0
       - rfc3339-validator==0.1.4
       - rfc3986-validator==0.1.1
       - rich==13.9.4
       - rpds-py==0.22.3
+      - rsa==4.9
       - s3transfer==0.10.4
       - scikit-learn==1.4.2
       - scipy==1.9.3
@@ -160,17 +179,19 @@ dependencies:
       - six==1.17.0
       - sniffio==1.3.1
       - soupsieve==2.6
+      - sqlalchemy==1.4.20
       - stack-data==0.6.3
-      - tensorboard==2.16.2
+      - tensorboard==2.14.1
       - tensorboard-data-server==0.7.2
-      - tensorflow==2.16.2
-      - tensorflow-datasets==4.9.3
+      - tensorflow==2.14.1
+      - tensorflow-estimator==2.14.0
+      - tensorflow-federated==0.87.0
       - tensorflow-io-gcs-filesystem==0.37.1
-      - tensorflow-metadata==1.16.1
-      - tensorflow-text==2.16.1
+      - tensorflow-model-optimization==0.7.5
+      - tensorflow-privacy==0.9.0
+      - tensorflow-probability==0.22.1
       - termcolor==2.5.0
       - terminado==0.18.1
-      - tf-keras==2.16.0
       - threadpoolctl==3.5.0
       - tinycss2==1.4.0
       - toml==0.10.2
@@ -179,7 +200,7 @@ dependencies:
       - tqdm==4.66.6
       - traitlets==5.14.3
       - types-python-dateutil==2.9.0.20241206
-      - typing-extensions==4.12.2
+      - typing-extensions==4.5.0
       - tzdata==2024.2
       - uri-template==1.3.0
       - urllib3==1.26.20
@@ -189,6 +210,6 @@ dependencies:
       - websocket-client==1.8.0
       - werkzeug==3.1.3
       - widgetsnbextension==4.0.13
-      - wrapt==1.17.0
+      - wrapt==1.14.1
       - zipp==3.21.0
 prefix: /home/dimitris/anaconda3/envs/thesis_env

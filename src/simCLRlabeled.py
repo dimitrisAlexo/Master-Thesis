@@ -24,13 +24,10 @@ resource.setrlimit(resource.RLIMIT_NOFILE, (high, high))
 import math
 import matplotlib.pyplot as plt
 import tensorflow as tf
-import tensorflow_datasets as tfds
 
 import keras
-from keras import ops
 from keras import layers
 from keras import callbacks
-from tf_keras import mixed_precision
 
 from sklearn.manifold import TSNE
 
@@ -38,7 +35,9 @@ from utils import *
 
 # os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # run on CPU
 
-os.environ['XLA_FLAGS'] = '--xla_gpu_strict_conv_algorithm_picker=false'
+# os.environ['XLA_FLAGS'] = '--xla_gpu_strict_conv_algorithm_picker=false'
+
+os.environ['TF_CUDNN_USE_AUTOTUNE'] = "1"
 
 if tf.config.list_physical_devices('GPU'):
     print("Using GPU...")
@@ -46,9 +45,11 @@ else:
     print("Using CPU...")
 
 # Mixed precision policy
-policy = mixed_precision.Policy('mixed_float16')
-mixed_precision.set_global_policy(policy)
+policy = tf.keras.mixed_precision.Policy('mixed_float16')
+tf.keras.mixed_precision.set_global_policy(policy)
 print("Using mixed precision...")
+
+tf.config.optimizer.set_jit(True)  # Enable XLA
 
 """
 ## Hyperparameter setup
@@ -289,6 +290,8 @@ class Augmentation:
             ])
 
             # Apply the rotation matrix to the sample
+            sample = tf.cast(sample, tf.float16)
+            rotation_matrix = tf.cast(rotation_matrix, tf.float16)
             return tf.linalg.matmul(sample, rotation_matrix)
 
         # Apply the rotate_single_sample function to each sample in the batch using tf.map_fn
@@ -311,6 +314,8 @@ class Augmentation:
             gravity_vector = gravity_magnitude * gravity_direction
 
             # Add the gravity vector to each time step of the sample
+            sample = tf.cast(sample, tf.float16)
+            gravity_vector = tf.cast(gravity_vector, tf.float16)
             return sample + gravity_vector
 
         # Apply the add_gravity_to_sample function to each sample in the batch using tf.map_fn
@@ -556,7 +561,7 @@ class Augmentation:
         permuted_data = tf.map_fn(
             lambda x: tf.gather(x[0], x[1]),
             (reshaped_data_1, permuted_indices),
-            fn_output_signature=tf.float32
+            fn_output_signature=tf.float16
         )
 
         # Reshape back to the original shape (batch_size, time_steps, channels)
@@ -751,7 +756,7 @@ def embeddings_function(M):
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
             layers.BatchNormalization(),
-            layers.LeakyReLU(negative_slope=0.2),
+            layers.LeakyReLU(alpha=0.2),
             # layers.Dropout(0.05),
             layers.MaxPooling1D(pool_size=2),
 
@@ -759,7 +764,7 @@ def embeddings_function(M):
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
             layers.BatchNormalization(),
-            layers.LeakyReLU(negative_slope=0.2),
+            layers.LeakyReLU(alpha=0.2),
             # layers.Dropout(0.05),
             layers.MaxPooling1D(pool_size=2),
 
@@ -767,7 +772,7 @@ def embeddings_function(M):
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
             layers.BatchNormalization(),
-            layers.LeakyReLU(negative_slope=0.2),
+            layers.LeakyReLU(alpha=0.2),
             # layers.Dropout(0.2),
             layers.MaxPooling1D(pool_size=2),
 
@@ -775,7 +780,7 @@ def embeddings_function(M):
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
             layers.BatchNormalization(),
-            layers.LeakyReLU(negative_slope=0.2),
+            layers.LeakyReLU(alpha=0.2),
             # layers.Dropout(0.2),
             layers.MaxPooling1D(pool_size=2),
 
@@ -833,9 +838,9 @@ class ContrastiveModel(keras.Model):
             name="linear_probe",
         )
 
-        self.encoder.summary()
-        self.projection_head.summary()
-        self.linear_probe.summary()
+        # self.encoder.summary()
+        # self.projection_head.summary()
+        # self.linear_probe.summary()
 
     def compile(self, contrastive_optimizer, probe_optimizer, **kwargs):
         super().compile(**kwargs)
@@ -862,48 +867,6 @@ class ContrastiveModel(keras.Model):
             self.probe_accuracy
         ]
 
-    def contrastive_loss_with_regularization(self, projections_1, projections_2, regularization_weight=0.0):
-        # InfoNCE loss (information noise-contrastive estimation)
-        # NT-Xent loss (normalized temperature-scaled cross entropy)
-
-        # Cosine similarity: the dot product of the l2-normalized feature vectors
-        # projections_1 = ops.normalize(projections_1, axis=1)
-        # projections_2 = ops.normalize(projections_2, axis=1)
-        projections_1 = tf.nn.l2_normalize(projections_1, axis=1)
-        projections_2 = tf.nn.l2_normalize(projections_2, axis=1)
-        similarities = (
-                ops.matmul(projections_1, ops.transpose(projections_2)) / self.temperature
-        )
-
-        # The similarity between the representations of two augmented views of the
-        # same image should be higher than their similarity with other views
-        batch_size = ops.shape(projections_1)[0]
-        contrastive_labels = ops.arange(batch_size)
-        self.contrastive_accuracy.update_state(contrastive_labels, similarities)
-        self.contrastive_accuracy.update_state(
-            contrastive_labels, ops.transpose(similarities)
-        )
-
-        # Mask to exclude the diagonal (positive pairs)
-        mask = tf.eye(batch_size)
-        negative_similarities = tf.where(mask == 0, similarities, 0)
-
-        # Regularization term: penalize negative similarities that are too high
-        regularization_term = tf.reduce_sum(
-            tf.square(negative_similarities))  # L2 regularization on the negative similarities
-        regularization_loss = regularization_weight * regularization_term
-
-        # Calculate positive pair similarities
-        loss_1_2 = keras.losses.sparse_categorical_crossentropy(contrastive_labels, similarities, from_logits=True)
-        loss_2_1 = keras.losses.sparse_categorical_crossentropy(contrastive_labels, ops.transpose(similarities),
-                                                                from_logits=True)
-
-        # Combine the regularization term with the contrastive loss
-        contrastive_loss = (loss_1_2 + loss_2_1) / 2
-        combined_loss = contrastive_loss + regularization_loss
-
-        return combined_loss
-
     def contrastive_loss(self, projections_1, projections_2):
         # InfoNCE loss (information noise-contrastive estimation)
         # NT-Xent loss (normalized temperature-scaled cross entropy)
@@ -912,16 +875,16 @@ class ContrastiveModel(keras.Model):
         projections_1 = tf.nn.l2_normalize(projections_1, axis=1)
         projections_2 = tf.nn.l2_normalize(projections_2, axis=1)
         similarities = (
-                ops.matmul(projections_1, ops.transpose(projections_2)) / self.temperature
+                tf.matmul(projections_1, tf.transpose(projections_2)) / self.temperature
         )
 
         # The similarity between the representations of two augmented views of the
         # same image should be higher than their similarity with other views
-        batch_size = ops.shape(projections_1)[0]
-        contrastive_labels = ops.arange(batch_size)
+        batch_size = tf.shape(projections_1)[0]
+        contrastive_labels = tf.range(batch_size)
         self.contrastive_accuracy.update_state(contrastive_labels, similarities)
         self.contrastive_accuracy.update_state(
-            contrastive_labels, ops.transpose(similarities)
+            contrastive_labels, tf.transpose(similarities)
         )
 
         # The temperature-scaled similarities are used as logits for cross-entropy
@@ -930,7 +893,7 @@ class ContrastiveModel(keras.Model):
             contrastive_labels, similarities, from_logits=True
         )
         loss_2_1 = keras.losses.sparse_categorical_crossentropy(
-            contrastive_labels, ops.transpose(similarities), from_logits=True
+            contrastive_labels, tf.transpose(similarities), from_logits=True
         )
         return (loss_1_2 + loss_2_1) / 2
 
@@ -962,6 +925,7 @@ class ContrastiveModel(keras.Model):
 
         return tf.reduce_mean(positive_similarities), tf.reduce_mean(negative_similarities)
 
+    # @tf.function
     def train_step(self, data):
         unlabeled_data = data[0]
         labeled_data = data[1][0]

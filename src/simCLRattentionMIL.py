@@ -13,12 +13,9 @@ import tensorflow as tf
 import keras
 
 from keras import layers
-from keras import ops
 from keras import callbacks
 from keras import optimizers
 from keras import metrics
-from tf_keras import backend as k
-from tf_keras import mixed_precision
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import LeaveOneOut
@@ -26,6 +23,22 @@ from sklearn.model_selection import RepeatedKFold
 from sklearn.metrics import confusion_matrix
 
 start = time.time()
+
+import ctypes
+
+# Check for CUDA
+try:
+    ctypes.cdll.LoadLibrary("libcudart.so")
+    print("CUDA detected.")
+except OSError as e:
+    print("CUDA not found:", e)
+
+# Check for cuDNN
+try:
+    ctypes.cdll.LoadLibrary("libcudnn.so")
+    print("cuDNN detected.")
+except OSError as e:
+    print("cuDNN not found:", e)
 
 np.set_printoptions(threshold=sys.maxsize)
 
@@ -40,7 +53,9 @@ def print_memory_usage():
 
 # os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # run on CPU
 
-os.environ['XLA_FLAGS'] = '--xla_gpu_strict_conv_algorithm_picker=false'
+# os.environ['XLA_FLAGS'] = '--xla_gpu_strict_conv_algorithm_picker=false'
+
+os.environ['TF_CUDNN_USE_AUTOTUNE'] = "1"
 
 if tf.config.list_physical_devices('GPU'):
     print("Using GPU...")
@@ -48,10 +63,15 @@ else:
     print("Using CPU...")
 
 # Mixed precision policy
-policy = mixed_precision.Policy('mixed_float16')
-mixed_precision.set_global_policy(policy)
-print("Using mixed precision...")
+# policy = tf.keras.mixed_precision.Policy('mixed_float16')
+# tf.keras.mixed_precision.set_global_policy(policy)
+# print("Using mixed precision...")
 
+policy = tf.keras.mixed_precision.Policy('float32')
+tf.keras.mixed_precision.set_global_policy(policy)
+print("Using float32...")
+
+tf.config.optimizer.set_jit(True)  # Enable XLA
 
 # k.set_floatx("float16")
 
@@ -135,7 +155,7 @@ class MILAttentionLayer(layers.Layer):
         masked_weights = layers.Add()([mask_layer, instance_weights])
 
         # Apply softmax over instances such that the output summation is equal to 1.
-        alpha = ops.softmax(masked_weights, axis=1)
+        alpha = tf.nn.softmax(masked_weights, axis=1)
 
         # Split to recreate the same array of tensors we had as inputs.
         return alpha
@@ -145,16 +165,16 @@ class MILAttentionLayer(layers.Layer):
         original_instance = instance
 
         # tanh(v*h_k^T)
-        instance = ops.tanh(ops.tensordot(instance, self.v_weight_params, axes=1))
+        instance = tf.math.tanh(tf.tensordot(instance, self.v_weight_params, axes=1))
 
         # for learning non-linear relations efficiently.
         if self.use_gated:
-            instance = instance * ops.sigmoid(
-                ops.tensordot(original_instance, self.u_weight_params, axes=1)
+            instance = instance * tf.math.sigmoid(
+                tf.tensordot(original_instance, self.u_weight_params, axes=1)
             )
 
         # w^T*(tanh(v*h_k^T)) / w^T*(tanh(v*h_k^T)*sigmoid(u*h_k^T))
-        return ops.tensordot(instance, self.w_weight_params, axes=1)
+        return tf.tensordot(instance, self.w_weight_params, axes=1)
 
 
 def embeddings_function(M):
@@ -164,28 +184,28 @@ def embeddings_function(M):
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
             layers.BatchNormalization(),
-            layers.LeakyReLU(negative_slope=0.2),
+            layers.LeakyReLU(alpha=0.2),
             layers.MaxPooling1D(pool_size=2),
 
             # Layer 2
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
             layers.BatchNormalization(),
-            layers.LeakyReLU(negative_slope=0.2),
+            layers.LeakyReLU(alpha=0.2),
             layers.MaxPooling1D(pool_size=2),
 
             # Layer 3
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
             layers.BatchNormalization(),
-            layers.LeakyReLU(negative_slope=0.2),
+            layers.LeakyReLU(alpha=0.2),
             layers.MaxPooling1D(pool_size=2),
 
             # Layer 4
             layers.ZeroPadding1D(padding=1),
             layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
             layers.BatchNormalization(),
-            layers.LeakyReLU(negative_slope=0.2),
+            layers.LeakyReLU(alpha=0.2),
             layers.MaxPooling1D(pool_size=2),
 
             # Flatten and Dense layer to get M-dimensional output
@@ -201,12 +221,12 @@ def final_classifier():
         [
             # Layer 1: Dense M → 32, Leaky-ReLU (α = 0.2), Dropout p = 0.2
             layers.Dense(32, name="dense_1"),
-            layers.LeakyReLU(negative_slope=0.2, name="leaky_relu_1"),
+            layers.LeakyReLU(alpha=0.2, name="leaky_relu_1"),
             layers.Dropout(0.2, name="dropout_1"),
 
             # Layer 2: Dense 32 → 16, Leaky-ReLU (α = 0.2), Dropout p = 0.2
             layers.Dense(16, name="dense_2"),
-            layers.LeakyReLU(negative_slope=0.2, name="leaky_relu_2"),
+            layers.LeakyReLU(alpha=0.2, name="leaky_relu_2"),
             layers.Dropout(0.2, name="dropout_2"),
 
             # Layer 3: Dense 16 → 2, 2-way softmax
@@ -228,7 +248,7 @@ class MILModel(keras.Model):
 
         # Define encoder optimizer
         self.embeddings_learning_rate = 5e-4
-        self.optimizer_embeddings = keras.optimizers.Adam(learning_rate=self.embeddings_learning_rate)
+        self.optimizer_embeddings = optimizers.Adam(learning_rate=self.embeddings_learning_rate)
 
         # Define model components
         self.mask_layer = layers.Lambda(self.create_mask_layer, name="mask_layer")
@@ -291,8 +311,12 @@ class MILModel(keras.Model):
     def finetune(self):
         """Load pre-trained weights for the embeddings function."""
         try:
-            self.embeddings_function.build(input_shape=(None, self.Ws, self.C))
-            self.embeddings_function.load_weights("embeddings.weights.h5")
+            # self.embeddings_function.build(input_shape=(None, self.Ws, self.C))
+            # for i, weight in enumerate(self.embeddings_function.weights):
+            #     print(f"Weight {i}: Name = {weight.name}, Shape = {weight.shape}")
+            # print("type of embeddings_model.weights: ", type(self.embeddings_function.weights))
+            # print("type of embeddings_model.weights[0]: ", type(self.embeddings_function.weights[0]))
+            self.embeddings_function.load_weights("federated.weights.h5")
             self.embeddings_function.trainable = False  # Freeze encoder
             print("Successfully loaded SimCLR weights into encoder.")
         except Exception as e:
@@ -307,14 +331,18 @@ class MILModel(keras.Model):
     #         y_pred = self(x, training=True)
     #         # Compute the loss using model.compute_loss
     #         loss = self.compute_loss(x, y, y_pred)
+    #         loss = self.optimizer.get_scaled_loss(loss)
     #
     #     # Compute gradients
     #     gradients = tape.gradient(loss, self.trainable_variables)
+    #     gradients = self.optimizer.get_unscaled_gradients(gradients)
     #     # Apply gradients
     #     self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
     #
     #     # Manually update metrics
     #     for metric in self.metrics:
+    #         y = tf.squeeze(y, axis=-1)
+    #         y_pred = y_pred[:, 1]
     #         metric.update_state(y, y_pred)
     #
     #     # Return a dictionary mapping metric names to their current value
@@ -363,6 +391,10 @@ class MILModel(keras.Model):
         # print("Length of other_grads: ", len(other_grads))
         # print("other_grads: ", other_grads)
 
+        # Unscale the gradients
+        # embeddings_grads = self.optimizer_embeddings.get_unscaled_gradients(embeddings_grads)
+        # other_grads = self.optimizer_other.get_unscaled_gradients(other_grads)
+
         # Print the gradient norms for monitoring
         # print("Embeddings Gradient Norm:", tf.linalg.global_norm(embeddings_grads))
         # print("Other Parameters Gradient Norm:", tf.linalg.global_norm(other_grads))
@@ -375,6 +407,8 @@ class MILModel(keras.Model):
 
         # Manually update metrics
         for metric in self.metrics:
+            y = tf.squeeze(y, axis=-1)
+            y_pred = y_pred[:, 1]
             metric.update_state(y, y_pred)
 
         return {m.name: m.result() for m in self.metrics}
@@ -383,7 +417,7 @@ class MILModel(keras.Model):
 class ClearMemory(callbacks.Callback):
 
     def on_train_begin(self, logs=None):
-        k.clear_session()
+        tf.keras.backend.clear_session()
         gc.collect()
 
         print("Memory cleared.")
@@ -441,7 +475,6 @@ def train(train_dataset, val_dataset, model):
         optimizer=optimizers.Adam(learning_rate=5e-4),
         loss="sparse_categorical_crossentropy",
         metrics=["accuracy"],
-        auto_scale_loss=True,
         run_eagerly=False
     )
 
@@ -465,7 +498,6 @@ def train(train_dataset, val_dataset, model):
         optimizer=optimizers.Adam(learning_rate=1e-3),
         loss="sparse_categorical_crossentropy",
         metrics=["accuracy"],
-        auto_scale_loss=True,
         run_eagerly=False
     )
 
@@ -509,10 +541,11 @@ Kt, Ws, C = np.array(sdataset['X'])[0].shape
 input_shape = (Kt, Ws, C)
 print(input_shape)
 M = 64
-model = MILModel(input_shape=input_shape, M=M)
-
-# Show single model architecture.
-print(model.summary())
+# model = MILModel(input_shape=input_shape, M=M)
+#
+# # Show single model architecture.
+# model.build(input_shape=(None, Kt, Ws, C))
+# print(model.summary())
 
 
 def predict(dataset, trained_model):
