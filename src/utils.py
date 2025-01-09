@@ -183,6 +183,7 @@ def form_federated_dataset(tremor_gdata, tremor_sdata, E_thres, Kt, num_clients)
             if bag is not None:
                 counter += 1
                 print(f"Processed subject {counter}: {subject_id}")
+                print(f"Length of bag: {len(bag)}")
                 federated_data.append(np.array(bag))  # Add bag as a NumPy array
 
         # Stop once we have collected num_clients bags

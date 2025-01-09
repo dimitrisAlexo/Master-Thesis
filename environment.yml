@@ -12,7 +12,6 @@ dependencies:
   - libstdcxx-ng=11.2.0=h1234567_1
   - ncurses=6.4=h6a678d5_0
   - openssl=3.0.15=h5eee18b_0
-  - pip=24.2=py39h06a4308_0
   - python=3.9.20=he870216_1
   - readline=8.2=h5eee18b_0
   - setuptools=75.1.0=py39h06a4308_0
@@ -142,6 +141,7 @@ dependencies:
       - pathspec==0.12.1
       - pexpect==4.9.0
       - pillow==11.0.0
+      - pip==24.3.1
       - platformdirs==4.3.6
       - portpicker==1.6.0
       - prometheus-client==0.21.1

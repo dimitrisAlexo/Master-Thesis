@@ -18,7 +18,7 @@ from utils import form_federated_dataset, unpickle_data
 start = time.time()
 
 os.environ['TF_CUDNN_USE_AUTOTUNE'] = "1"
-# os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # run on CPU
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # run on CPU
 
 os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
 
@@ -51,7 +51,7 @@ E_thres = 0.15*3
 Kt = 100
 
 
-NUM_CLIENTS = 50
+NUM_CLIENTS = 25
 NUM_EPOCHS = 5
 NUM_ROUNDS = 30
 BATCH_SIZE = 50
@@ -88,11 +88,18 @@ def preprocess(dataset):
         )
 
     return (tf.data.Dataset.from_tensor_slices(dataset)
-            .shuffle(SHUFFLE_BUFFER, seed=1)
+            .repeat(NUM_EPOCHS)
+            .shuffle(SHUFFLE_BUFFER)
             .batch(BATCH_SIZE)
             .map(batch_format_fn)
-            .repeat(NUM_EPOCHS)
             .prefetch(buffer_size=tf.data.AUTOTUNE))
+
+    # return (tf.data.Dataset.from_tensor_slices(dataset)
+    #             .shuffle(SHUFFLE_BUFFER, seed=1)
+    #             .batch(BATCH_SIZE)
+    #             .map(batch_format_fn)
+    #             .repeat(NUM_EPOCHS)
+    #             .prefetch(buffer_size=tf.data.AUTOTUNE))
 
 
 def make_federated_data(client_data):
@@ -105,6 +112,8 @@ federated_train_data = make_federated_data(federated_data)
 print(f'Number of client datasets: {len(federated_train_data)}')
 print(f'First dataset: {federated_train_data[0]}')
 print(f'Length of first dataset: {len(federated_train_data[0])}')
+print(f'Length of second dataset: {len(federated_train_data[1])}')
+print(f'Length of third dataset: {len(federated_train_data[2])}')
 
 MnistVariables = collections.namedtuple(
     'MnistVariables', 'encoder num_examples loss_sum accuracy_sum')
@@ -118,28 +127,32 @@ class EmbeddingsModel(tf.keras.Model):
                 # Layer 1
                 tf.keras.layers.ZeroPadding1D(padding=1),
                 tf.keras.layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
-                tf.keras.layers.BatchNormalization(),
+                # tf.keras.layers.BatchNormalization(center=False, scale=False),
+                tf.keras.layers.GroupNormalization(groups=1, axis=-1),
                 tf.keras.layers.LeakyReLU(alpha=0.2),
                 tf.keras.layers.MaxPooling1D(pool_size=2),
 
                 # Layer 2
                 tf.keras.layers.ZeroPadding1D(padding=1),
                 tf.keras.layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
-                tf.keras.layers.BatchNormalization(),
+                # tf.keras.layers.BatchNormalization(center=False, scale=False),
+                tf.keras.layers.GroupNormalization(groups=1, axis=-1),
                 tf.keras.layers.LeakyReLU(alpha=0.2),
                 tf.keras.layers.MaxPooling1D(pool_size=2),
 
                 # Layer 3
                 tf.keras.layers.ZeroPadding1D(padding=1),
                 tf.keras.layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
-                tf.keras.layers.BatchNormalization(),
+                # tf.keras.layers.BatchNormalization(center=False, scale=False),
+                tf.keras.layers.GroupNormalization(groups=1, axis=-1),
                 tf.keras.layers.LeakyReLU(alpha=0.2),
                 tf.keras.layers.MaxPooling1D(pool_size=2),
 
                 # Layer 4
                 tf.keras.layers.ZeroPadding1D(padding=1),
                 tf.keras.layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
-                tf.keras.layers.BatchNormalization(),
+                # tf.keras.layers.BatchNormalization(center=False, scale=False),
+                tf.keras.layers.GroupNormalization(groups=1, axis=-1),
                 tf.keras.layers.LeakyReLU(alpha=0.2),
                 tf.keras.layers.MaxPooling1D(pool_size=2),
 
@@ -150,8 +163,8 @@ class EmbeddingsModel(tf.keras.Model):
             name="embeddings_function"
         )
 
-    def call(self, inputs, training=None):
-        return self.model(inputs, training=training)
+    def call(self, inputs, **kwargs):
+        return self.model(inputs, **kwargs)
 
 
 def normalize_data(data):
@@ -396,6 +409,8 @@ embeddings_model.set_weights(reordered_weights)
 
 embeddings_model.save_weights("federated.weights.h5")
 print("Embeddings function weights saved successfully.")
+
+# embeddings_model.load_weights("federated.weights.h5")
 
 
 def get_labeled_embeddings(pretraining_model, labeled_gdataset):
