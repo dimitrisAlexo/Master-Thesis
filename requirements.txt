@@ -10,7 +10,7 @@ pandas~=2.2.2
 jupyter
 pydot
 boto3
-tensorflow~=2.16.1
+tensorflow~=2.16.2
 keras-tuner
 keras-cv
 tf_keras

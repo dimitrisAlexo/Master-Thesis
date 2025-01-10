@@ -168,35 +168,39 @@ def form_unlabeled_dataset(tremor_gdata, tremor_sdata, E_thres, Kt):
     return data
 
 
-def form_federated_dataset(tremor_data, E_thres, Kt, num_clients):
-    data = []
+def form_federated_dataset(tremor_gdata, tremor_sdata, E_thres, Kt, num_clients):
+
+    print("Length of tremor_gdata: ", len(tremor_gdata))
+    tremor_gdata = {key: value for key, value in tremor_gdata.items() if key not in tremor_sdata}
+    print("Length of tremor_gdata: ", len(tremor_gdata))
+    federated_data = []
     counter = 0
 
     # Collect and filter data
-    for subject_id in tremor_data.keys():
-        if isinstance(tremor_data[subject_id][1], dict):
-            bag = filter_data(tremor_data[subject_id], E_thres, Kt)
+    for subject_id in tremor_gdata.keys():
+        if isinstance(tremor_gdata[subject_id][1], dict):
+            bag = filter_data(tremor_gdata[subject_id], E_thres, Kt)
             if bag is not None:
                 counter += 1
-                print(counter)
-                data.extend(bag)
+                print(f"Processed subject {counter}: {subject_id}")
+                print(f"Length of bag: {len(bag)}")
+                federated_data.append(np.array(bag))  # Add bag as a NumPy array
 
-    print("Counter: ", counter)
+        # Stop once we have collected num_clients bags
+        if len(federated_data) >= num_clients:
+            break
 
-    # Ensure enough data to divide into num_clients
-    data = np.array(data)
-    if len(data) < Kt * num_clients:
-        raise ValueError("Not enough data to form the specified number of clients with Kt windows each.")
+    print("Total subjects processed: ", counter)
 
-    # Split data into client-specific datasets
-    federated_data = []
-    for i in range(num_clients):
-        client_data = data[i * Kt:(i + 1) * Kt]
-        federated_data.append(client_data)
+    # Verify there are enough clients
+    if len(federated_data) < num_clients:
+        raise ValueError("Not enough bags to form the specified number of clients.")
 
-    # Save raw data (NumPy arrays)
+    # Save raw data (list of NumPy arrays)
     with open("federated_data.pickle", 'wb') as f:
         pkl.dump(federated_data, f)
+
+    print("Saved federated_data to 'federated_data.pickle'")
 
     return federated_data
 
