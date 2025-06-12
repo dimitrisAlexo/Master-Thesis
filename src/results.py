@@ -3,7 +3,9 @@ from simCLRattentionMIL import *
 import json
 
 
-def run_multiple_experiments(sdataset, k=5, n_repeats=5, repetitions=10, save_path="results.json"):
+def run_multiple_experiments(
+    sdataset, k=5, n_repeats=5, repetitions=10, save_path="results.json"
+):
     """
     Run the rkf_evaluate experiment multiple times, calculate the average and standard deviation
     of accuracy, sensitivity, specificity, precision, and F1-score, ignoring NaN values, and
@@ -42,21 +44,24 @@ def run_multiple_experiments(sdataset, k=5, n_repeats=5, repetitions=10, save_pa
             _, _, _, results = rkf_evaluate(sdataset, k=k, n_repeats=n_repeats)
 
             # Append results to lists
-            accuracy_list.append(results['final_accuracy'])
-            sensitivity_list.append(results['final_sensitivity'])
-            specificity_list.append(results['final_specificity'])
-            precision_list.append(results['final_precision'])
-            f1_score_list.append(results['final_f1_score'])
+            accuracy_list.append(results["final_accuracy"])
+            sensitivity_list.append(results["final_sensitivity"])
+            specificity_list.append(results["final_specificity"])
+            precision_list.append(results["final_precision"])
+            f1_score_list.append(results["final_f1_score"])
 
             # Save results after every repetition
             with open(save_path, "w") as file:
-                json.dump({
-                    "accuracy_list": accuracy_list,
-                    "sensitivity_list": sensitivity_list,
-                    "specificity_list": specificity_list,
-                    "precision_list": precision_list,
-                    "f1_score_list": f1_score_list
-                }, file)
+                json.dump(
+                    {
+                        "accuracy_list": accuracy_list,
+                        "sensitivity_list": sensitivity_list,
+                        "specificity_list": specificity_list,
+                        "precision_list": precision_list,
+                        "f1_score_list": f1_score_list,
+                    },
+                    file,
+                )
 
         except Exception as e:
             print(f"Error during repetition {i + 1}: {e}")
@@ -73,16 +78,16 @@ def run_multiple_experiments(sdataset, k=5, n_repeats=5, repetitions=10, save_pa
 
     # Create a metrics summary dictionary
     metrics_summary = {
-        'accuracy_mean': accuracy_mean,
-        'accuracy_std': accuracy_std,
-        'sensitivity_mean': sensitivity_mean,
-        'sensitivity_std': sensitivity_std,
-        'specificity_mean': specificity_mean,
-        'specificity_std': specificity_std,
-        'precision_mean': precision_mean,
-        'precision_std': precision_std,
-        'f1_score_mean': f1_score_mean,
-        'f1_score_std': f1_score_std,
+        "accuracy_mean": accuracy_mean,
+        "accuracy_std": accuracy_std,
+        "sensitivity_mean": sensitivity_mean,
+        "sensitivity_std": sensitivity_std,
+        "specificity_mean": specificity_mean,
+        "specificity_std": specificity_std,
+        "precision_mean": precision_mean,
+        "precision_std": precision_std,
+        "f1_score_mean": f1_score_mean,
+        "f1_score_std": f1_score_std,
     }
 
     # Print the metrics summary

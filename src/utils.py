@@ -41,9 +41,12 @@ def create_bag(subject, E_thres, Kt):
     for session in subject[3]:
         num_pairs = session.shape[0] // 2
         session = np.concatenate(
-            [session[2 * i:2 * i + 2].reshape(1, 1000, 3) for i in range(num_pairs)], axis=0
+            [session[2 * i : 2 * i + 2].reshape(1, 1000, 3) for i in range(num_pairs)],
+            axis=0,
         )
-        filtered_session = [segment for segment in session if calculate_energy(segment) > E_thres]
+        filtered_session = [
+            segment for segment in session if calculate_energy(segment) > E_thres
+        ]
         if len(filtered_session) >= 2:
             bag.extend([segment for segment in filtered_session])
     bag.sort(key=lambda segment: calculate_energy(segment), reverse=True)
@@ -62,9 +65,13 @@ def create_bag(subject, E_thres, Kt):
 
 def form_dataset(tremor_data, E_thres, Kt, train_label_str, test_label_str):
     # Set of valid labels
-    valid_labels = {'updrs16', 'updrs20', 'updrs21', 'tremor_manual'}
-    assert train_label_str in valid_labels, f"train_label_str '{train_label_str}' is not valid."
-    assert test_label_str in valid_labels, f"test_label_str '{test_label_str}' is not valid."
+    valid_labels = {"updrs16", "updrs20", "updrs21", "tremor_manual"}
+    assert (
+        train_label_str in valid_labels
+    ), f"train_label_str '{train_label_str}' is not valid."
+    assert (
+        test_label_str in valid_labels
+    ), f"test_label_str '{test_label_str}' is not valid."
 
     data = []
     for subject_id in tremor_data.keys():
@@ -76,12 +83,22 @@ def form_dataset(tremor_data, E_thres, Kt, train_label_str, test_label_str):
             # Get the associated label
             train_label = tremor_data[subject_id][1][train_label_str]
 
-            if test_label_str == 'updrs20':
-                test_label = 0 if tremor_data[subject_id][1]['updrs20_right'] + tremor_data[subject_id][1][
-                    'updrs20_left'] == 0 else 1
-            elif test_label_str == 'updrs21':
-                test_label = 0 if tremor_data[subject_id][1]['updrs21_right'] + tremor_data[subject_id][1][
-                    'updrs21_left'] == 0 else 1
+            if test_label_str == "updrs20":
+                test_label = (
+                    0
+                    if tremor_data[subject_id][1]["updrs20_right"]
+                    + tremor_data[subject_id][1]["updrs20_left"]
+                    == 0
+                    else 1
+                )
+            elif test_label_str == "updrs21":
+                test_label = (
+                    0
+                    if tremor_data[subject_id][1]["updrs21_right"]
+                    + tremor_data[subject_id][1]["updrs21_left"]
+                    == 0
+                    else 1
+                )
             else:
                 test_label = 0 if tremor_data[subject_id][1][test_label_str] == 0 else 1
 
@@ -90,9 +107,9 @@ def form_dataset(tremor_data, E_thres, Kt, train_label_str, test_label_str):
                 data.append((bag, train_label, test_label))
 
     # Create a DataFrame from the data list
-    df = pd.DataFrame(data, columns=['X', 'y_train', 'y_test'])
+    df = pd.DataFrame(data, columns=["X", "y_train", "y_test"])
 
-    with open("sdataset.pickle", 'wb') as f:
+    with open("sdataset.pickle", "wb") as f:
         pkl.dump(df, f)
 
     return df
@@ -100,11 +117,11 @@ def form_dataset(tremor_data, E_thres, Kt, train_label_str, test_label_str):
 
 def plot_sample(sample):
     plt.figure(figsize=(10, 4))
-    plt.plot(sample[:, 0], label='X-axis')
-    plt.plot(sample[:, 1], label='Y-axis')
-    plt.plot(sample[:, 2], label='Z-axis')
-    plt.xlabel('Time Steps')
-    plt.ylabel('Accelerometer Value')
+    plt.plot(sample[:, 0], label="X-axis")
+    plt.plot(sample[:, 1], label="Y-axis")
+    plt.plot(sample[:, 2], label="Z-axis")
+    plt.xlabel("Time Steps")
+    plt.ylabel("Accelerometer Value")
     plt.legend()
     plt.grid(True)
     plt.show()
@@ -119,12 +136,15 @@ def filter_data(subject, E_thres, Kt):
         # time.sleep(5)
         num_pairs = session.shape[0] // 3
         session = np.concatenate(
-            [session[3 * i:3 * i + 3].reshape(1, 1500, 3) for i in range(num_pairs)], axis=0
+            [session[3 * i : 3 * i + 3].reshape(1, 1500, 3) for i in range(num_pairs)],
+            axis=0,
         )
         # print("Session end: ", np.shape(session))
         # plot_sample(session[0])
         # time.sleep(5)
-        filtered_session = [segment for segment in session if calculate_energy(segment) > E_thres]
+        filtered_session = [
+            segment for segment in session if calculate_energy(segment) > E_thres
+        ]
         if len(filtered_session) >= 2:
             bag.extend([segment for segment in filtered_session])
     bag.sort(key=lambda segment: calculate_energy(segment), reverse=True)
@@ -138,7 +158,9 @@ def filter_data(subject, E_thres, Kt):
 
 def form_unlabeled_dataset(tremor_gdata, tremor_sdata, E_thres, Kt):
     print("Length of tremor_gdata: ", len(tremor_gdata))
-    tremor_gdata = {key: value for key, value in tremor_gdata.items() if key not in tremor_sdata}
+    tremor_gdata = {
+        key: value for key, value in tremor_gdata.items() if key not in tremor_sdata
+    }
     print("Length of tremor_gdata: ", len(tremor_gdata))
 
     data = []
@@ -162,7 +184,7 @@ def form_unlabeled_dataset(tremor_gdata, tremor_sdata, E_thres, Kt):
     indices = np.random.permutation(data.shape[0])
     data = data[indices]
 
-    with open("unlabeled_data.pickle", 'wb') as f:
+    with open("unlabeled_data.pickle", "wb") as f:
         pkl.dump(data, f)
 
     return data
@@ -171,7 +193,9 @@ def form_unlabeled_dataset(tremor_gdata, tremor_sdata, E_thres, Kt):
 def form_federated_dataset(tremor_gdata, tremor_sdata, E_thres, Kt, num_clients):
 
     print("Length of tremor_gdata: ", len(tremor_gdata))
-    tremor_gdata = {key: value for key, value in tremor_gdata.items() if key not in tremor_sdata}
+    tremor_gdata = {
+        key: value for key, value in tremor_gdata.items() if key not in tremor_sdata
+    }
     print("Length of tremor_gdata: ", len(tremor_gdata))
     federated_data = []
     counter = 0
@@ -197,7 +221,7 @@ def form_federated_dataset(tremor_gdata, tremor_sdata, E_thres, Kt, num_clients)
         raise ValueError("Not enough bags to form the specified number of clients.")
 
     # Save raw data (list of NumPy arrays)
-    with open("federated_data.pickle", 'wb') as f:
+    with open("federated_data.pickle", "wb") as f:
         pkl.dump(federated_data, f)
 
     print("Saved federated_data to 'federated_data.pickle'")
@@ -233,8 +257,12 @@ def normalize_mil(data):
     using min-max normalization within each bag and batch.
     """
     # Find the min and max values for each bag and batch (across time_steps and channels)
-    min_val = np.min(data, axis=(2, 3), keepdims=True)  # shape: (bags, batch_size, 1, 1)
-    max_val = np.max(data, axis=(2, 3), keepdims=True)  # shape: (bags, batch_size, 1, 1)
+    min_val = np.min(
+        data, axis=(2, 3), keepdims=True
+    )  # shape: (bags, batch_size, 1, 1)
+    max_val = np.max(
+        data, axis=(2, 3), keepdims=True
+    )  # shape: (bags, batch_size, 1, 1)
 
     # Avoid division by zero by adding a small epsilon to the denominator
     epsilon = 1e-8
