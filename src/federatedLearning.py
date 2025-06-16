@@ -7,6 +7,7 @@ import os
 import gc
 import subprocess
 import signal
+import random
 import tensorflow as tf
 import tensorflow_federated as tff
 import matplotlib.pyplot as plt
@@ -53,9 +54,10 @@ E_thres = 0.15 * 3
 Kt = 100
 
 
-NUM_CLIENTS = 25
+NUM_CLIENTS = 180
+NUM_CLIENTS_PER_ROUND = 45
 NUM_EPOCHS = 5
-NUM_ROUNDS = 50
+NUM_ROUNDS = 100
 BATCH_SIZE = 50
 SHUFFLE_BUFFER = Kt
 TEMPERATURE = 0.01
@@ -119,8 +121,8 @@ print(f"Length of first dataset: {len(federated_train_data[0])}")
 print(f"Length of second dataset: {len(federated_train_data[1])}")
 print(f"Length of third dataset: {len(federated_train_data[2])}")
 
-MnistVariables = collections.namedtuple(
-    "MnistVariables", "encoder num_examples loss_sum accuracy_sum"
+SimCLRVariables = collections.namedtuple(
+    "SimCLRVariables", "encoder num_examples loss_sum accuracy_sum"
 )
 
 
@@ -187,10 +189,10 @@ def apply_augmentations(data, augmenter):
     return data
 
 
-def create_mnist_variables():
+def create_simclr_variables():
     encoder = embeddings_function(M)
     encoder.build(input_shape=(None, 1000, 3))
-    return MnistVariables(
+    return SimCLRVariables(
         encoder=encoder,
         num_examples=tf.Variable(0.0, name="num_examples", trainable=False),
         loss_sum=tf.Variable(0.0, name="loss_sum", trainable=False),
@@ -237,7 +239,7 @@ def predict_on_batch(variables, x):
     return variables.encoder(x, training=True)
 
 
-def mnist_forward_pass(variables, batch):
+def simclr_forward_pass(variables, batch):
     # Augmentation
     augmenter = Augmentation()
 
@@ -250,14 +252,7 @@ def mnist_forward_pass(variables, batch):
     y_1 = predict_on_batch(variables, augmented_data_1)
     y_2 = predict_on_batch(variables, augmented_data_2)
 
-    print(f"y_1: {y_1}")
-    print(f"y_2: {y_2}")
-
     loss, accuracy, predictions = contrastive_loss(y_1, y_2)
-
-    print(f"loss: {loss}")
-    print(f"accuracy: {accuracy}")
-    print(f"predictions: {predictions}")
 
     num_examples = tf.cast(tf.size(batch["x"]), tf.float32)
 
@@ -284,10 +279,10 @@ def get_metric_finalizers():
     )
 
 
-class MnistModel(tff.learning.models.VariableModel):
+class SimCLRModel(tff.learning.models.VariableModel):
 
     def __init__(self):
-        self._variables = create_mnist_variables()
+        self._variables = create_simclr_variables()
 
     @property
     def trainable_variables(self):
@@ -326,7 +321,7 @@ class MnistModel(tff.learning.models.VariableModel):
     @tf.function
     def forward_pass(self, batch, training=True):
         del training
-        loss, predictions = mnist_forward_pass(self._variables, batch)
+        loss, predictions = simclr_forward_pass(self._variables, batch)
         num_examples = tf.shape(batch["x"])[0]
         return tff.learning.models.BatchOutput(
             loss=loss, predictions=predictions, num_examples=num_examples
@@ -336,13 +331,13 @@ class MnistModel(tff.learning.models.VariableModel):
     def report_local_unfinalized_metrics(
         self,
     ) -> collections.OrderedDict[str, list[tf.Tensor]]:
-        """Creates an `OrderedDict` of metric names to unfinalized values."""
+        """Creates an OrderedDict of metric names to unfinalized values."""
         return get_local_unfinalized_metrics(self._variables)
 
     def metric_finalizers(
         self,
     ) -> collections.OrderedDict[str, Callable[[list[tf.Tensor]], tf.Tensor]]:
-        """Creates an `OrderedDict` of metric names to finalizers."""
+        """Creates an OrderedDict of metric names to finalizers."""
         return get_metric_finalizers()
 
     @tf.function
@@ -352,21 +347,28 @@ class MnistModel(tff.learning.models.VariableModel):
             var.assign(tf.zeros_like(var))
 
 
+# TRAIN
+def sample_clients(federated_data, num_clients_per_round):
+    """Randomly selects a subset of clients."""
+    total_clients = len(federated_data)
+    sampled_indices = random.sample(range(total_clients), num_clients_per_round)
+    return [federated_data[i] for i in sampled_indices]
+
+
 training_process = tff.learning.algorithms.build_weighted_fed_avg(
-    MnistModel,
+    SimCLRModel,
     client_optimizer_fn=tff.learning.optimizers.build_adam(learning_rate=1e-3),
     server_optimizer_fn=tff.learning.optimizers.build_sgdm(learning_rate=1.0),
 )
 
 train_state = training_process.initialize()
 
-result = training_process.next(train_state, federated_train_data)
-train_state = result.state
-metrics = result.metrics
-print("round  1, metrics={}".format(metrics))
-
-for round_num in range(2, NUM_ROUNDS + 1):
-    result = training_process.next(train_state, federated_train_data)
+# Training loop
+for round_num in range(1, NUM_ROUNDS + 1):
+    federated_train_data_round = sample_clients(
+        federated_train_data, NUM_CLIENTS_PER_ROUND
+    )
+    result = training_process.next(train_state, federated_train_data_round)
     train_state = result.state
     metrics = result.metrics
     print("round {:2d}, metrics={}".format(round_num, metrics))
@@ -376,18 +378,19 @@ for round_num in range(2, NUM_ROUNDS + 1):
 # Extract the trained weights
 model_weights = training_process.get_model_weights(train_state)
 
-# Create an instance of MnistModel and load the trained weights
-mnist_model = MnistModel()
-mnist_model.set_weights_from_state(model_weights)
+# Create an instance of SimCLRModel and load the trained weights
+simclr_model = SimCLRModel()
+simclr_model.set_weights_from_state(model_weights)
 
 # Save the encoder weights
 try:
-    mnist_model.get_encoder.save_weights("federated.weights.h5")
+    simclr_model.get_encoder.save_weights("federated.weights.h5")
     print("Trained encoder weights saved successfully.")
 except Exception as e:
     print(f"Failed to save federated weights: {e}")
 
-embeddings_model = mnist_model.get_encoder
+# simclr_model.get_encoder.load_weights("federated.weights.h5")
+embeddings_model = simclr_model.get_encoder
 
 
 def get_labeled_embeddings(pretraining_model, labeled_gdataset):
@@ -434,27 +437,49 @@ def visualize_embeddings(
     # Apply t-SNE to embeddings
     reduced_embeddings = tsne.fit_transform(embeddings)
 
-    # 2D Visualization
+    # # 2D Visualization
+    # if n_components == 2:
+    #     plt.figure(figsize=(10, 8))
+    #     plt.scatter(
+    #         reduced_embeddings[labels == 0, 0],
+    #         reduced_embeddings[labels == 0, 1],
+    #         label="No tremor",
+    #         c="b",
+    #         alpha=0.5,
+    #     )
+    #     plt.scatter(
+    #         reduced_embeddings[labels == 1, 0],
+    #         reduced_embeddings[labels == 1, 1],
+    #         label="Tremor",
+    #         c="r",
+    #         alpha=0.5,
+    #     )
+    #     plt.title("2D t-SNE Visualization of Embeddings")
+    #     plt.xlabel("t-SNE Dimension 1")
+    #     plt.ylabel("t-SNE Dimension 2")
+    #     plt.legend()
+    #     plt.show()
+
     if n_components == 2:
-        plt.figure(figsize=(10, 8))
+        plt.figure(figsize=(6, 6))  # Adjust figure size for compactness
         plt.scatter(
             reduced_embeddings[labels == 0, 0],
             reduced_embeddings[labels == 0, 1],
-            label="No tremor",
             c="b",
             alpha=0.5,
+            s=10,
         )
         plt.scatter(
             reduced_embeddings[labels == 1, 0],
             reduced_embeddings[labels == 1, 1],
-            label="Tremor",
             c="r",
             alpha=0.5,
+            s=10,
         )
-        plt.title("2D t-SNE Visualization of Embeddings")
-        plt.xlabel("t-SNE Dimension 1")
-        plt.ylabel("t-SNE Dimension 2")
-        plt.legend()
+        plt.xticks([])  # Remove x-axis ticks
+        plt.yticks([])  # Remove y-axis ticks
+        plt.axis("off")  # Remove axis lines and background
+        plt.tight_layout()  # Adjust spacing to reduce padding
         plt.show()
 
     # 3D Visualization

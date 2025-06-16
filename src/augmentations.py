@@ -115,7 +115,9 @@ class Augmentation:
             return tf.linalg.matmul(sample, rotation_matrix)
 
         # Apply the rotate_single_sample function to each sample in the batch using tf.map_fn
-        rotated_batch = tf.map_fn(rotate_single_sample, data, dtype=tf.float32)
+        rotated_batch = tf.map_fn(
+            rotate_single_sample, data, fn_output_signature=tf.float32
+        )
 
         return rotated_batch
 
@@ -142,7 +144,7 @@ class Augmentation:
 
         # Apply the add_gravity_to_sample function to each sample in the batch using tf.map_fn
         gravity_augmented_batch = tf.map_fn(
-            add_gravity_to_sample, data, dtype=tf.float32
+            add_gravity_to_sample, data, fn_output_signature=tf.float32
         )
 
         return gravity_augmented_batch

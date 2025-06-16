@@ -199,6 +199,7 @@ def form_federated_dataset(tremor_gdata, tremor_sdata, E_thres, Kt, num_clients)
     print("Length of tremor_gdata: ", len(tremor_gdata))
     federated_data = []
     counter = 0
+    total_length = 0
 
     # Collect and filter data
     for subject_id in tremor_gdata.keys():
@@ -209,12 +210,14 @@ def form_federated_dataset(tremor_gdata, tremor_sdata, E_thres, Kt, num_clients)
                 print(f"Processed subject {counter}: {subject_id}")
                 print(f"Length of bag: {len(bag)}")
                 federated_data.append(np.array(bag))  # Add bag as a NumPy array
+                total_length += len(bag)
 
         # Stop once we have collected num_clients bags
         if len(federated_data) >= num_clients:
             break
 
     print("Total subjects processed: ", counter)
+    print("Total length of federated_data: ", total_length)
 
     # Verify there are enough clients
     if len(federated_data) < num_clients:

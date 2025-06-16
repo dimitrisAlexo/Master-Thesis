@@ -11,6 +11,7 @@ import random
 
 start = time.time()
 
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
 np.set_printoptions(threshold=sys.maxsize)
