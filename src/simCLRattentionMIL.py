@@ -9,6 +9,8 @@ import gc
 import sys
 import resource
 
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
 import tensorflow as tf
 import keras
 
@@ -16,7 +18,6 @@ from keras import layers
 from keras import ops
 from keras import callbacks
 from keras import optimizers
-from keras import metrics
 from tf_keras import backend as k
 from tf_keras import mixed_precision
 from tqdm import tqdm
@@ -26,6 +27,8 @@ from sklearn.model_selection import RepeatedKFold
 from sklearn.metrics import confusion_matrix
 
 start = time.time()
+
+plt.ion()
 
 np.set_printoptions(threshold=sys.maxsize)
 
@@ -40,20 +43,25 @@ def print_memory_usage():
 
 # os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # run on CPU
 
-os.environ['XLA_FLAGS'] = '--xla_gpu_strict_conv_algorithm_picker=false'
+os.environ["XLA_FLAGS"] = "--xla_gpu_strict_conv_algorithm_picker=false"
 
-if tf.config.list_physical_devices('GPU'):
+if tf.config.list_physical_devices("GPU"):
     print("Using GPU...")
 else:
     print("Using CPU...")
 
 # Mixed precision policy
-policy = mixed_precision.Policy('mixed_float16')
+policy = mixed_precision.Policy("mixed_float16")
 mixed_precision.set_global_policy(policy)
 print("Using mixed precision...")
 
 
 # k.set_floatx("float16")
+
+
+# === MODE SELECTION ===
+MODE = "federated"
+assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
 
 
 class MILAttentionLayer(layers.Layer):
@@ -71,12 +79,12 @@ class MILAttentionLayer(layers.Layer):
     """
 
     def __init__(
-            self,
-            weight_params_dim,
-            kernel_initializer="glorot_uniform",
-            kernel_regularizer=None,
-            use_gated=False,
-            **kwargs,
+        self,
+        weight_params_dim,
+        kernel_initializer="glorot_uniform",
+        kernel_regularizer=None,
+        use_gated=False,
+        **kwargs,
     ):
         super().__init__(**kwargs)
 
@@ -157,43 +165,49 @@ class MILAttentionLayer(layers.Layer):
         return ops.tensordot(instance, self.w_weight_params, axes=1)
 
 
-def embeddings_function(M):
-    return keras.Sequential(
-        [
-            # Layer 1
-            layers.ZeroPadding1D(padding=1),
-            layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
-            layers.BatchNormalization(),
-            layers.LeakyReLU(negative_slope=0.2),
-            layers.MaxPooling1D(pool_size=2),
-
-            # Layer 2
-            layers.ZeroPadding1D(padding=1),
-            layers.Conv1D(filters=32, kernel_size=8, padding='valid'),
-            layers.BatchNormalization(),
-            layers.LeakyReLU(negative_slope=0.2),
-            layers.MaxPooling1D(pool_size=2),
-
-            # Layer 3
-            layers.ZeroPadding1D(padding=1),
-            layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
-            layers.BatchNormalization(),
-            layers.LeakyReLU(negative_slope=0.2),
-            layers.MaxPooling1D(pool_size=2),
-
-            # Layer 4
-            layers.ZeroPadding1D(padding=1),
-            layers.Conv1D(filters=16, kernel_size=16, padding='valid'),
-            layers.BatchNormalization(),
-            layers.LeakyReLU(negative_slope=0.2),
-            layers.MaxPooling1D(pool_size=2),
-
-            # Flatten and Dense layer to get M-dimensional output
-            layers.Flatten(),
-            layers.Dense(M),
-        ],
-        name="embeddings_function",
-    )
+def embeddings_function(M, use_batchnorm=True):
+    layers_list = [
+        # --- Layer 1 ---
+        layers.ZeroPadding1D(padding=1),
+        layers.Conv1D(filters=32, kernel_size=8, padding="valid"),
+    ]
+    if use_batchnorm:
+        layers_list.append(layers.BatchNormalization())
+    layers_list += [
+        layers.LeakyReLU(negative_slope=0.2),
+        layers.MaxPooling1D(pool_size=2),
+        # --- Layer 2 ---
+        layers.ZeroPadding1D(padding=1),
+        layers.Conv1D(filters=32, kernel_size=8, padding="valid"),
+    ]
+    if use_batchnorm:
+        layers_list.append(layers.BatchNormalization())
+    layers_list += [
+        layers.LeakyReLU(negative_slope=0.2),
+        layers.MaxPooling1D(pool_size=2),
+        # --- Layer 3 ---
+        layers.ZeroPadding1D(padding=1),
+        layers.Conv1D(filters=16, kernel_size=16, padding="valid"),
+    ]
+    if use_batchnorm:
+        layers_list.append(layers.BatchNormalization())
+    layers_list += [
+        layers.LeakyReLU(negative_slope=0.2),
+        layers.MaxPooling1D(pool_size=2),
+        # --- Layer 4 ---
+        layers.ZeroPadding1D(padding=1),
+        layers.Conv1D(filters=16, kernel_size=16, padding="valid"),
+    ]
+    if use_batchnorm:
+        layers_list.append(layers.BatchNormalization())
+    layers_list += [
+        layers.LeakyReLU(negative_slope=0.2),
+        layers.MaxPooling1D(pool_size=2),
+        # --- Flatten and Dense ---
+        layers.Flatten(),
+        layers.Dense(M),
+    ]
+    return keras.Sequential(layers_list, name="embeddings_function")
 
 
 def final_classifier():
@@ -203,14 +217,12 @@ def final_classifier():
             layers.Dense(32, name="dense_1"),
             layers.LeakyReLU(negative_slope=0.2, name="leaky_relu_1"),
             layers.Dropout(0.2, name="dropout_1"),
-
             # Layer 2: Dense 32 → 16, Leaky-ReLU (α = 0.2), Dropout p = 0.2
             layers.Dense(16, name="dense_2"),
             layers.LeakyReLU(negative_slope=0.2, name="leaky_relu_2"),
             layers.Dropout(0.2, name="dropout_2"),
-
             # Layer 3: Dense 16 → 2, 2-way softmax
-            layers.Dense(2, activation='softmax', name="output")
+            layers.Dense(2, activation="softmax", name="output"),
         ],
         name="final_classifier",
     )
@@ -226,16 +238,24 @@ class MILModel(keras.Model):
         self.weight_params_dim = weight_params_dim
         self.use_gated = use_gated
 
-        # Define encoder optimizer
-        self.embeddings_learning_rate = 5e-4
-        self.optimizer_embeddings = keras.optimizers.Adam(learning_rate=self.embeddings_learning_rate)
+        # Mode-specific batchnorm
+        use_batchnorm = not (MODE == "federated")
+        self.embeddings_learning_rate = 5e-4 if MODE != "baseline" else 1e-3
+        self.optimizer_embeddings = keras.optimizers.Adam(
+            learning_rate=self.embeddings_learning_rate
+        )
 
         # Define model components
         self.mask_layer = layers.Lambda(self.create_mask_layer, name="mask_layer")
-        self.reshape_to_embeddings = layers.Lambda(lambda x: tf.reshape(x, (-1, self.Ws, self.C)))
-        self.embeddings_function = embeddings_function(self.M)
-        self.reshape_to_attention = layers.Lambda(lambda x: tf.reshape(x, (-1, self.Kt, self.M)),
-                                                  name="reshape_attention")
+        self.reshape_to_embeddings = layers.Lambda(
+            lambda x: tf.reshape(x, (-1, self.Ws, self.C))
+        )
+        self.embeddings_function = embeddings_function(
+            self.M, use_batchnorm=use_batchnorm
+        )
+        self.reshape_to_attention = layers.Lambda(
+            lambda x: tf.reshape(x, (-1, self.Kt, self.M)), name="reshape_attention"
+        )
         self.attention_layer = MILAttentionLayer(
             weight_params_dim=self.weight_params_dim,
             kernel_regularizer=keras.regularizers.L2(0.01),
@@ -243,11 +263,16 @@ class MILModel(keras.Model):
             name="alpha",
         )
         self.weighted_embeddings_layer = layers.Multiply(name="weighted_embeddings")
-        self.sum_layer = layers.Lambda(lambda x: tf.reduce_sum(x, axis=1), name="sum_layer")
+        self.sum_layer = layers.Lambda(
+            lambda x: tf.reduce_sum(x, axis=1), name="sum_layer"
+        )
         self.classifier = final_classifier()
 
-        # Finetune
-        self.finetune()
+        # Finetune only for simclr/federated
+        if MODE in ["simclr", "federated"]:
+            self.finetune()
+        else:
+            print("Finetune skipped for baseline mode.")
 
     @property
     def optimizer(self):
@@ -290,36 +315,33 @@ class MILModel(keras.Model):
 
     def finetune(self):
         """Load pre-trained weights for the embeddings function."""
+        if MODE == "simclr":
+            weights_file = "embeddings.weights.h5"
+        elif MODE == "federated":
+            weights_file = "federated.weights.h5"
+        else:
+            return  # No finetune for baseline
         try:
             self.embeddings_function.build(input_shape=(None, self.Ws, self.C))
-            self.embeddings_function.load_weights("embeddings.weights.h5")
+            self.embeddings_function.load_weights(weights_file)
             self.embeddings_function.trainable = False  # Freeze encoder
-            print("Successfully loaded SimCLR weights into encoder.")
+            print(f"Successfully loaded weights from '{weights_file}' into encoder.")
         except Exception as e:
-            print(f"Failed to load SimCLR weights: {e}")
+            print(f"Failed to load weights: {e}")
 
-    # def train_step(self, data):
-    #     # Unpack data
-    #     x, y = data
-    #
-    #     with tf.GradientTape() as tape:
-    #         # Forward pass
-    #         y_pred = self(x, training=True)
-    #         # Compute the loss using model.compute_loss
-    #         loss = self.compute_loss(x, y, y_pred)
-    #
-    #     # Compute gradients
-    #     gradients = tape.gradient(loss, self.trainable_variables)
-    #     # Apply gradients
-    #     self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
-    #
-    #     # Manually update metrics
-    #     for metric in self.metrics:
-    #         metric.update_state(y, y_pred)
-    #
-    #     # Return a dictionary mapping metric names to their current value
-    #     return {m.name: m.result() for m in self.metrics}
+    # Baseline train step
+    def train_step_baseline(self, data):
+        x, y = data
+        with tf.GradientTape() as tape:
+            y_pred = self(x, training=True)
+            loss = self.compute_loss(x, y, y_pred)
+        gradients = tape.gradient(loss, self.trainable_variables)
+        self.optimizer_other.apply_gradients(zip(gradients, self.trainable_variables))
+        for metric in self.metrics:
+            metric.update_state(y, y_pred)
+        return {m.name: m.result() for m in self.metrics}
 
+    # SimCLR/Federated train step (with encoder freezing/unfreezing)
     def freeze_encoder(self):
         """Freeze the encoder by setting trainable=False."""
         self.embeddings_function.trainable = False
@@ -331,52 +353,25 @@ class MILModel(keras.Model):
     def train_step(self, data):
         # Unpack data
         x, y = data
-
         with tf.GradientTape() as tape:
             # Forward pass
             y_pred = self(x, training=True)
             # Compute the loss
             loss = self.compute_loss(x, y, y_pred)
 
-        # print("all trainable variables: ", self.trainable_variables)
-        # print("length of trainable variables: ", len(self.trainable_variables))
-
         # Separate parameters for different learning rates
         embeddings_vars = self.embeddings_function.trainable_variables
-        # print("Type of embeddings_vars: ", type(embeddings_vars))
-        # print("Length of embeddings_vars: ", len(embeddings_vars))
-        # print("embeddings_vars: ", embeddings_vars)
-
-        other_vars = self.trainable_variables[len(embeddings_vars):]
-        # print("Type of other_vars: ", type(other_vars))
-        # print("Length of other_vars: ", len(other_vars))
-        # print("other_vars: ", other_vars)
-
-        # Compute gradients for both parameter groups
+        other_vars = self.trainable_variables[len(embeddings_vars) :]
         gradients = tape.gradient(loss, self.trainable_variables)
-        # print("Length of gradients: ", len(gradients))
-        # print("gradients: ", gradients)
-        embeddings_grads = gradients[:len(embeddings_vars)]
-        # print("Length of embeddings_grads: ", len(embeddings_grads))
-        # print("embeddings_grads: ", embeddings_grads)
-        other_grads = gradients[len(embeddings_vars):]
-        # print("Length of other_grads: ", len(other_grads))
-        # print("other_grads: ", other_grads)
-
-        # Print the gradient norms for monitoring
-        # print("Embeddings Gradient Norm:", tf.linalg.global_norm(embeddings_grads))
-        # print("Other Parameters Gradient Norm:", tf.linalg.global_norm(other_grads))
-
-        # Apply gradients with different learning rates
+        embeddings_grads = gradients[: len(embeddings_vars)]
+        other_grads = gradients[len(embeddings_vars) :]
         if embeddings_vars:
-            self.optimizer_embeddings.apply_gradients(zip(embeddings_grads, embeddings_vars))
-
+            self.optimizer_embeddings.apply_gradients(
+                zip(embeddings_grads, embeddings_vars)
+            )
         self.optimizer_other.apply_gradients(zip(other_grads, other_vars))
-
-        # Manually update metrics
         for metric in self.metrics:
             metric.update_state(y, y_pred)
-
         return {m.name: m.result() for m in self.metrics}
 
 
@@ -391,7 +386,9 @@ class ClearMemory(callbacks.Callback):
 
 def lr_schedule(epoch, lr):
     total_epochs = num_epochs
-    decay_start_epoch = total_epochs // 2  # Start decay at the halfway point of the training
+    decay_start_epoch = (
+        total_epochs // 2
+    )  # Start decay at the halfway point of the training
     if epoch >= decay_start_epoch:
         return lr * 0.90  # Decay the learning rate by a factor of 0.9
     return lr
@@ -402,50 +399,41 @@ def train(train_dataset, val_dataset, model):
     # Prepare callbacks.
     # Path where to save best weights.
 
-    # print(model.get_layer("embeddings_function").summary())
-
-    # Take the file name from the wrapper.
-    file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../best_model.weights.h5")
-
-    # Initialize model checkpoint callback.
-    model_checkpoint = callbacks.ModelCheckpoint(
-        file_path,
-        monitor="val_loss",
-        verbose=1,
-        mode="min",
-        save_best_only=True,
-        save_weights_only=True,
-    )
-
-    # Initialize early stopping callback.
-    # The model performance is monitored across the validation data and stops training
-    # when the generalization error cease to decrease.
-    early_stopping = callbacks.EarlyStopping(
-        monitor="val_loss",
-        patience=10,
-        mode="min",
-        verbose=1,
-        start_from_epoch=20,
-        restore_best_weights=False
-    )
-
     # Callbacks
     clear_memory = ClearMemory()
     lr_scheduler = callbacks.LearningRateScheduler(lr_schedule)
 
-    model.freeze_encoder()
+    # Mode-specific training logic
+    if MODE == "baseline":
+        # No encoder freezing, no fine-tuning, single phase
+        model.compile(
+            optimizer=optimizers.Adam(learning_rate=1e-3),
+            loss="sparse_categorical_crossentropy",
+            metrics=["accuracy"],
+            auto_scale_loss=True,
+            run_eagerly=False,
+        )
+        # Patch the baseline train_step
+        model.train_step = model.train_step_baseline
+        model.fit(
+            train_dataset,
+            validation_data=val_dataset,
+            epochs=num_epochs,
+            batch_size=batch_size,
+            callbacks=[lr_scheduler, clear_memory],
+            verbose=1,
+        )
+        return model
 
-    # Compile model.
+    # simclr/federated: freeze encoder, train, then unfreeze and fine-tune
+    model.freeze_encoder()
     model.compile(
-        # optimizer=optimizers.Adam(learning_rate=1e-3, beta_2=0.95, weight_decay=1e-5, clipnorm=1.0),
         optimizer=optimizers.Adam(learning_rate=5e-4),
         loss="sparse_categorical_crossentropy",
         metrics=["accuracy"],
         auto_scale_loss=True,
-        run_eagerly=False
+        run_eagerly=False,
     )
-
-    # Fit model.
     model.fit(
         train_dataset,
         validation_data=val_dataset,
@@ -456,20 +444,14 @@ def train(train_dataset, val_dataset, model):
     )
 
     print("Finetuning model...")
-
     model.unfreeze_encoder()
-
-    # Compile model.
     model.compile(
-        # optimizer=optimizers.Adam(learning_rate=1e-3, beta_2=0.95, weight_decay=1e-5, clipnorm=1.0),
         optimizer=optimizers.Adam(learning_rate=1e-3),
         loss="sparse_categorical_crossentropy",
         metrics=["accuracy"],
         auto_scale_loss=True,
-        run_eagerly=False
+        run_eagerly=False,
     )
-
-    # Fit model.
     model.fit(
         train_dataset,
         validation_data=val_dataset,
@@ -478,11 +460,6 @@ def train(train_dataset, val_dataset, model):
         callbacks=[lr_scheduler, clear_memory],
         verbose=1,
     )
-
-    # Load best weights.
-    # print("Loading best weights...")
-    # model.load_weights(file_path)
-
     return model
 
 
@@ -498,14 +475,14 @@ batch_size = 1
 # print("Forming dataset...")
 # sdataset = form_dataset(tremor_sdata, E_thres, Kt, 'tremor_manual', 'tremor_manual')
 
-with open("sdataset.pickle", 'rb') as f:
+with open("sdataset.pickle", "rb") as f:
     print("Loading sdataset...")
     sdataset = pkl.load(f)
 
 print(sdataset)
 
 # Building model(s).
-Kt, Ws, C = np.array(sdataset['X'])[0].shape
+Kt, Ws, C = np.array(sdataset["X"])[0].shape
 input_shape = (Kt, Ws, C)
 print(input_shape)
 M = 64
@@ -521,19 +498,16 @@ def predict(dataset, trained_model):
 
     loss, accuracy = trained_model.evaluate(dataset, verbose=0)
 
-    print(
-        f"The average loss and accuracy are {loss}"
-        f" and {100 * accuracy} % resp."
-    )
+    print(f"The average loss and accuracy are {loss}" f" and {100 * accuracy} % resp.")
 
     return predictions
 
 
 def loso_evaluate(data):
     # Extract the bags and labels
-    bags = data['X'].tolist()
-    y_train = data['y_train'].tolist()
-    y_test = data['y_test'].tolist()
+    bags = data["X"].tolist()
+    y_train = data["y_train"].tolist()
+    y_test = data["y_test"].tolist()
 
     # Initialize LeaveOneOut
     loo = LeaveOneOut()
@@ -556,10 +530,15 @@ def loso_evaluate(data):
         val_labels = np.array([np.array([label]) for label in val_label])
 
         train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
-        train_dataset = train_dataset.shuffle(buffer_size=len(train_data)).batch(batch_size).prefetch(
-            buffer_size=tf.data.AUTOTUNE)
+        train_dataset = (
+            train_dataset.shuffle(buffer_size=len(train_data))
+            .batch(batch_size)
+            .prefetch(buffer_size=tf.data.AUTOTUNE)
+        )
         val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
-        val_dataset = val_dataset.batch(batch_size).prefetch(buffer_size=tf.data.AUTOTUNE)
+        val_dataset = val_dataset.batch(batch_size).prefetch(
+            buffer_size=tf.data.AUTOTUNE
+        )
 
         current_model = MILModel(input_shape=input_shape, M=M)
 
@@ -592,7 +571,9 @@ def loso_evaluate(data):
                 fp += 1
 
     # Calculate metrics
-    accuracy, sensitivity, specificity, precision, f1_score = calculate_metrics(tn, fp, fn, tp)
+    accuracy, sensitivity, specificity, precision, f1_score = calculate_metrics(
+        tn, fp, fn, tp
+    )
 
     print(f"Final accuracy across all subjects: {accuracy * 100:.2f}%")
     print(f"Final sensitivity across all subjects: {sensitivity * 100:.2f}%")
@@ -605,9 +586,9 @@ def loso_evaluate(data):
 
 def rkf_evaluate(data, k, n_repeats):
     # Extract the bags and labels
-    bags = data['X'].tolist()
-    y_train = data['y_train'].tolist()
-    y_test = data['y_test'].tolist()
+    bags = data["X"].tolist()
+    y_train = data["y_train"].tolist()
+    y_test = data["y_test"].tolist()
 
     # Initialize RepeatedKFold
     rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats)
@@ -640,10 +621,15 @@ def rkf_evaluate(data, k, n_repeats):
         print_memory_usage()
 
         train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
-        train_dataset = train_dataset.shuffle(buffer_size=10 * len(train_data)).batch(batch_size).prefetch(
-            buffer_size=tf.data.AUTOTUNE)
+        train_dataset = (
+            train_dataset.shuffle(buffer_size=10 * len(train_data))
+            .batch(batch_size)
+            .prefetch(buffer_size=tf.data.AUTOTUNE)
+        )
         val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
-        val_dataset = val_dataset.batch(batch_size).prefetch(buffer_size=tf.data.AUTOTUNE)
+        val_dataset = val_dataset.batch(batch_size).prefetch(
+            buffer_size=tf.data.AUTOTUNE
+        )
 
         current_model = MILModel(input_shape=input_shape, M=M)
 
@@ -676,7 +662,9 @@ def rkf_evaluate(data, k, n_repeats):
         print("tp:", tp)
 
         # Calculate metrics
-        accuracy, sensitivity, specificity, precision, f1_score = calculate_metrics(tn, fp, fn, tp)
+        accuracy, sensitivity, specificity, precision, f1_score = calculate_metrics(
+            tn, fp, fn, tp
+        )
 
         print("accuracy:", accuracy)
         print("sensitivity:", sensitivity)
@@ -690,13 +678,21 @@ def rkf_evaluate(data, k, n_repeats):
         overall_tp += tp
 
     # Calculate the final accuracy across all folds and repetitions
-    final_accuracy, final_sensitivity, final_specificity, final_precision, final_f1_score = calculate_metrics(
-        overall_tn, overall_fp, overall_fn, overall_tp
-    )
+    (
+        final_accuracy,
+        final_sensitivity,
+        final_specificity,
+        final_precision,
+        final_f1_score,
+    ) = calculate_metrics(overall_tn, overall_fp, overall_fn, overall_tp)
 
     print(f"Final average accuracy across all subjects: {final_accuracy * 100:.2f}%")
-    print(f"Final average sensitivity across all subjects: {final_sensitivity * 100:.2f}%")
-    print(f"Final average specificity across all subjects: {final_specificity * 100:.2f}%")
+    print(
+        f"Final average sensitivity across all subjects: {final_sensitivity * 100:.2f}%"
+    )
+    print(
+        f"Final average specificity across all subjects: {final_specificity * 100:.2f}%"
+    )
     print(f"Final average precision across all subjects: {final_precision * 100:.2f}%")
     print(f"Final average F1-score across all subjects: {final_f1_score * 100:.2f}%")
 
@@ -710,11 +706,11 @@ def rkf_evaluate(data, k, n_repeats):
     all_predicted_labels = all_predicted_labels[valid_indices]
 
     results = {
-        'final_accuracy': final_accuracy,
-        'final_sensitivity': final_sensitivity,
-        'final_specificity': final_specificity,
-        'final_precision': final_precision,
-        'final_f1_score': final_f1_score
+        "final_accuracy": final_accuracy,
+        "final_sensitivity": final_sensitivity,
+        "final_specificity": final_specificity,
+        "final_precision": final_precision,
+        "final_f1_score": final_f1_score,
     }
 
     return all_true_labels, all_predicted_probs, all_predicted_labels, results
@@ -722,8 +718,8 @@ def rkf_evaluate(data, k, n_repeats):
 
 def rkf_evaluate_with_validation(data, k, n_repeats):
     # Extract the bags and labels
-    bags = data['X'].tolist()
-    y_train = data['y_train'].tolist()
+    bags = data["X"].tolist()
+    y_train = data["y_train"].tolist()
 
     # Initialize RepeatedKFold
     rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats)
@@ -771,14 +767,21 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
 
         # Create TensorFlow datasets
         train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
-        train_dataset = train_dataset.shuffle(buffer_size=10 * len(train_data)).batch(batch_size).prefetch(
-            buffer_size=tf.data.AUTOTUNE)
+        train_dataset = (
+            train_dataset.shuffle(buffer_size=10 * len(train_data))
+            .batch(batch_size)
+            .prefetch(buffer_size=tf.data.AUTOTUNE)
+        )
 
         val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
-        val_dataset = val_dataset.batch(batch_size).prefetch(buffer_size=tf.data.AUTOTUNE)
+        val_dataset = val_dataset.batch(batch_size).prefetch(
+            buffer_size=tf.data.AUTOTUNE
+        )
 
         test_dataset = tf.data.Dataset.from_tensor_slices((test_data, test_labels))
-        test_dataset = test_dataset.batch(batch_size).prefetch(buffer_size=tf.data.AUTOTUNE)
+        test_dataset = test_dataset.batch(batch_size).prefetch(
+            buffer_size=tf.data.AUTOTUNE
+        )
 
         # Create the model
         current_model = MILModel(input_shape=input_shape, M=M)
@@ -813,7 +816,9 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
         print("tp:", tp)
 
         # Calculate metrics
-        accuracy, sensitivity, specificity, precision, f1_score = calculate_metrics(tn, fp, fn, tp)
+        accuracy, sensitivity, specificity, precision, f1_score = calculate_metrics(
+            tn, fp, fn, tp
+        )
 
         print("accuracy:", accuracy)
         print("sensitivity:", sensitivity)
@@ -827,12 +832,20 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
         overall_tp += tp
 
     # Calculate the final accuracy across all folds and repetitions
-    final_accuracy, final_sensitivity, final_specificity, final_precision, final_f1_score = calculate_metrics(
-        overall_tn, overall_fp, overall_fn, overall_tp
-    )
+    (
+        final_accuracy,
+        final_sensitivity,
+        final_specificity,
+        final_precision,
+        final_f1_score,
+    ) = calculate_metrics(overall_tn, overall_fp, overall_fn, overall_tp)
     print(f"Final average accuracy across all subjects: {final_accuracy * 100:.2f}%")
-    print(f"Final average sensitivity across all subjects: {final_sensitivity * 100:.2f}%")
-    print(f"Final average specificity across all subjects: {final_specificity * 100:.2f}%")
+    print(
+        f"Final average sensitivity across all subjects: {final_sensitivity * 100:.2f}%"
+    )
+    print(
+        f"Final average specificity across all subjects: {final_specificity * 100:.2f}%"
+    )
     print(f"Final average precision across all subjects: {final_precision * 100:.2f}%")
     print(f"Final average F1-score across all subjects: {final_f1_score * 100:.2f}%")
 
@@ -850,7 +863,9 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
 
 if __name__ == "__main__":
     # loso_evaluate(sdataset)
-    true_labels, predicted_probs, predicted_labels, results = rkf_evaluate(sdataset, k=5, n_repeats=4)
+    true_labels, predicted_probs, predicted_labels, results = rkf_evaluate(
+        sdataset, k=5, n_repeats=4
+    )
     # true_labels, predicted_probs, predicted_labels = rkf_evaluate_with_validation(sdataset, k=5, n_repeats=4)
 
     # np.savez("roc_curve_pretraining.npz", true_labels=true_labels, predicted_probs=predicted_probs)
@@ -862,4 +877,6 @@ if __name__ == "__main__":
     print(time.time() - start)
 
     # Alarm
-    os.system('play -nq -t alsa synth {} sine {}'.format(1, 999))
+    os.system('powershell.exe -c "[console]::beep(999,1000)"')
+
+    input("Press Enter to exit...")
