@@ -7,7 +7,6 @@ import os
 import time
 import gc
 import sys
-import resource
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
@@ -165,63 +164,35 @@ class MILAttentionLayer(layers.Layer):
         return ops.tensordot(instance, self.w_weight_params, axes=1)
 
 
-def embeddings_function(M, use_batchnorm=True):
-    layers_list = [
-        # --- Layer 1 ---
-        layers.ZeroPadding1D(padding=1),
-        layers.Conv1D(filters=32, kernel_size=8, padding="valid"),
-    ]
-    if use_batchnorm:
-        layers_list.append(layers.BatchNormalization())
-    layers_list += [
-        layers.LeakyReLU(negative_slope=0.2),
-        layers.MaxPooling1D(pool_size=2),
-        # --- Layer 2 ---
-        layers.ZeroPadding1D(padding=1),
-        layers.Conv1D(filters=32, kernel_size=8, padding="valid"),
-    ]
-    if use_batchnorm:
-        layers_list.append(layers.BatchNormalization())
-    layers_list += [
-        layers.LeakyReLU(negative_slope=0.2),
-        layers.MaxPooling1D(pool_size=2),
-        # --- Layer 3 ---
-        layers.ZeroPadding1D(padding=1),
-        layers.Conv1D(filters=16, kernel_size=16, padding="valid"),
-    ]
-    if use_batchnorm:
-        layers_list.append(layers.BatchNormalization())
-    layers_list += [
-        layers.LeakyReLU(negative_slope=0.2),
-        layers.MaxPooling1D(pool_size=2),
-        # --- Layer 4 ---
-        layers.ZeroPadding1D(padding=1),
-        layers.Conv1D(filters=16, kernel_size=16, padding="valid"),
-    ]
-    if use_batchnorm:
-        layers_list.append(layers.BatchNormalization())
-    layers_list += [
-        layers.LeakyReLU(negative_slope=0.2),
-        layers.MaxPooling1D(pool_size=2),
-        # --- Flatten and Dense ---
-        layers.Flatten(),
-        layers.Dense(M),
-    ]
-    return keras.Sequential(layers_list, name="embeddings_function")
+def embeddings_function(M):
+    # input_dim is 502 for typing data
+    return keras.Sequential(
+        [
+            # Layer 1:
+            keras.Input(shape=(K2, B)),  # Use your global or passed K2, B
+            layers.Dense(100),
+            layers.LeakyReLU(negative_slope=0.2),
+            layers.Dropout(0.1),
+            # Layer 2:
+            layers.Dense(50),
+            layers.LeakyReLU(negative_slope=0.2),
+            layers.Dropout(0.1),
+            layers.Dense(M),
+        ],
+        name="embeddings_function",
+    )
 
 
 def final_classifier():
     return keras.Sequential(
         [
-            # Layer 1: Dense M → 32, Leaky-ReLU (α = 0.2), Dropout p = 0.2
-            layers.Dense(32, name="dense_1"),
+            # Layer 1:
+            layers.Dense(30, name="dense_1"),
             layers.LeakyReLU(negative_slope=0.2, name="leaky_relu_1"),
-            layers.Dropout(0.2, name="dropout_1"),
-            # Layer 2: Dense 32 → 16, Leaky-ReLU (α = 0.2), Dropout p = 0.2
-            layers.Dense(16, name="dense_2"),
+            # Layer 2:
+            layers.Dense(10, name="dense_2"),
             layers.LeakyReLU(negative_slope=0.2, name="leaky_relu_2"),
-            layers.Dropout(0.2, name="dropout_2"),
-            # Layer 3: Dense 16 → 2, 2-way softmax
+            # Layer 3
             layers.Dense(2, activation="softmax", name="output"),
         ],
         name="final_classifier",
@@ -234,12 +205,11 @@ class MILModel(keras.Model):
 
         # Store parameters
         self.M = M
-        self.Kt, self.Ws, self.C = input_shape
+        self.K2, self.B = input_shape
         self.weight_params_dim = weight_params_dim
         self.use_gated = use_gated
 
         # Mode-specific batchnorm
-        use_batchnorm = not (MODE == "federated")
         self.embeddings_learning_rate = 5e-4 if MODE != "baseline" else 1e-3
         self.optimizer_embeddings = keras.optimizers.Adam(
             learning_rate=self.embeddings_learning_rate
@@ -247,14 +217,9 @@ class MILModel(keras.Model):
 
         # Define model components
         self.mask_layer = layers.Lambda(self.create_mask_layer, name="mask_layer")
-        self.reshape_to_embeddings = layers.Lambda(
-            lambda x: tf.reshape(x, (-1, self.Ws, self.C))
-        )
-        self.embeddings_function = embeddings_function(
-            self.M, use_batchnorm=use_batchnorm
-        )
+        self.embeddings_function = embeddings_function(self.M)
         self.reshape_to_attention = layers.Lambda(
-            lambda x: tf.reshape(x, (-1, self.Kt, self.M)), name="reshape_attention"
+            lambda x: tf.reshape(x, (-1, self.K2, self.M)), name="reshape_attention"
         )
         self.attention_layer = MILAttentionLayer(
             weight_params_dim=self.weight_params_dim,
@@ -283,11 +248,7 @@ class MILModel(keras.Model):
         self.optimizer_other = value
 
     def create_mask_layer(self, inputs):
-        # Sum the features along the last two dimensions (500, 3)
-        summed_features = tf.reduce_sum(inputs, axis=[2, 3], keepdims=True)
-
-        # Squeeze to remove the extra dimension
-        summed_features = tf.squeeze(summed_features, axis=-1)
+        summed_features = tf.reduce_sum(inputs, axis=2, keepdims=True)
 
         # Create a mask where summed_features is zero
         mask = tf.where(tf.abs(summed_features) < 1e-3, -np.inf, 0)
@@ -297,8 +258,7 @@ class MILModel(keras.Model):
     def call(self, inputs):
         # Forward pass through the model components
         mask_layer = self.mask_layer(inputs)
-        embeddings = self.reshape_to_embeddings(inputs)
-        embeddings = self.embeddings_function(embeddings)
+        embeddings = self.embeddings_function(inputs)
         embeddings = self.reshape_to_attention(embeddings)
 
         # Attention
@@ -322,7 +282,7 @@ class MILModel(keras.Model):
         else:
             return  # No finetune for baseline
         try:
-            self.embeddings_function.build(input_shape=(None, self.Ws, self.C))
+            self.embeddings_function.build(input_shape=(None, self.K2, self.B))
             self.embeddings_function.load_weights(weights_file)
             self.embeddings_function.trainable = False  # Freeze encoder
             print(f"Successfully loaded weights from '{weights_file}' into encoder.")
@@ -390,7 +350,7 @@ def lr_schedule(epoch, lr):
         total_epochs // 2
     )  # Start decay at the halfway point of the training
     if epoch >= decay_start_epoch:
-        return lr * 0.90  # Decay the learning rate by a factor of 0.9
+        return lr * 1.0  # Decay the learning rate by a factor of 0.9
     return lr
 
 
@@ -464,32 +424,29 @@ def train(train_dataset, val_dataset, model):
 
 
 # Adjust the paths to be relative to the current script location
-sdata_path = os.path.join("..", "data", "imu_sdata.pickle")
-tremor_sdata = unpickle_data(sdata_path)
+# sdata_path = os.path.join("..", "data", "typing_sdata.pickle")
+# typing_sdata = unpickle_data(sdata_path)
+# sdata_path_imu = os.path.join("..", "data", "imu_sdata.pickle")
+# tremor_sdata = unpickle_data(sdata_path_imu)
 
-E_thres = 0.15 * 2
-Kt = 100
-num_epochs = 50
-batch_size = 1
+K2 = 100
+num_epochs = 100
+batch_size = 8
 # {'updrs16', 'updrs20', 'updrs21', 'tremor_manual'}
-print("Forming dataset...")
-sdataset = form_dataset(tremor_sdata, E_thres, Kt, "tremor_manual", "tremor_manual")
+# print("Forming dataset...")
+# sdataset = form_typing_dataset(typing_sdata, tremor_sdata, K2)
 
-with open("sdataset.pickle", "rb") as f:
+with open("typing_sdataset.pickle", "rb") as f:
     print("Loading sdataset...")
     sdataset = pkl.load(f)
 
 print(sdataset)
 
 # Building model(s).
-Kt, Ws, C = np.array(sdataset["X"])[0].shape
-input_shape = (Kt, Ws, C)
-print(input_shape)
+K2, B = np.array(sdataset["X"])[0].shape
+input_shape = (K2, B)
+print("input shape:", input_shape)
 M = 64
-model = MILModel(input_shape=input_shape, M=M)
-
-# Show single model architecture.
-print(model.summary())
 
 
 def predict(dataset, trained_model):
@@ -506,27 +463,29 @@ def predict(dataset, trained_model):
 def loso_evaluate(data):
     # Extract the bags and labels
     bags = data["X"].tolist()
-    y_train = data["y_train"].tolist()
-    y_test = data["y_test"].tolist()
+    y = data["y"].tolist()
 
     # Initialize LeaveOneOut
     loo = LeaveOneOut()
 
     tn, fp, fn, tp = 0, 0, 0, 0
+    all_true_labels = []
+    all_predicted_labels = []
+    all_predicted_probs = []
 
-    for train_index, test_index in loo.split(bags):
+    n_subjects = len(bags)
+    for idx, (train_index, test_index) in enumerate(loo.split(bags), 1):
+        print(f"\033[91mIteration {idx}/{n_subjects}\033[0m")
         # Split the data into training and validation sets
         train_bags = [bags[i] for i in train_index]
-        train_labels = [y_train[i] for i in train_index]
+        train_labels = [y[i] for i in train_index]
         val_bag = [bags[i] for i in test_index]
-        val_label = [y_test[i] for i in test_index]
+        val_label = [y[i] for i in test_index]
 
         train_data = np.array(train_bags)
-        train_data = normalize_mil(train_data)
         train_labels = np.array([np.array([label]) for label in train_labels])
 
         val_data = np.array(val_bag)
-        val_data = normalize_mil(val_data)
         val_labels = np.array([np.array([label]) for label in val_label])
 
         train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
@@ -540,10 +499,12 @@ def loso_evaluate(data):
             buffer_size=tf.data.AUTOTUNE
         )
 
-        current_model = MILModel(input_shape=input_shape, M=M)
+        current_model = MILModel(input_shape=input_shape, M=M, use_gated=False)
+
+        print(current_model.summary())
 
         # Train the models on the training data
-        trained_model = train(train_dataset, val_dataset, current_model)
+        trained_model = train(train_dataset, train_dataset, current_model)
 
         print_memory_usage()
 
@@ -555,6 +516,12 @@ def loso_evaluate(data):
         # Compute confusion matrix
         predicted_label = np.argmax(class_predictions, axis=1).flatten()
         true_label = val_labels.flatten()
+
+        # Store for plotting
+        all_true_labels.extend(true_label)
+        all_predicted_labels.extend(predicted_label)
+        predicted_probs = class_predictions[:, 1].flatten()
+        all_predicted_probs.extend(predicted_probs)
 
         print("predicted_labels:", predicted_label)
         print("true_labels:", true_label)
@@ -581,14 +548,30 @@ def loso_evaluate(data):
     print(f"Final precision across all subjects: {precision * 100:.2f}%")
     print(f"Final F1-score across all subjects: {f1_score * 100:.2f}%")
 
-    return
+    # Convert lists to arrays for plotting
+    all_true_labels = np.array(all_true_labels)
+    all_predicted_probs = np.array(all_predicted_probs)
+    all_predicted_labels = np.array(all_predicted_labels)
+    valid_indices = ~np.isnan(all_true_labels) & ~np.isnan(all_predicted_probs)
+    all_true_labels = all_true_labels[valid_indices]
+    all_predicted_probs = all_predicted_probs[valid_indices]
+    all_predicted_labels = all_predicted_labels[valid_indices]
+
+    results = {
+        "final_accuracy": accuracy,
+        "final_sensitivity": sensitivity,
+        "final_specificity": specificity,
+        "final_precision": precision,
+        "final_f1_score": f1_score,
+    }
+
+    return all_true_labels, all_predicted_probs, all_predicted_labels, results
 
 
 def rkf_evaluate(data, k, n_repeats):
     # Extract the bags and labels
     bags = data["X"].tolist()
-    y_train = data["y_train"].tolist()
-    y_test = data["y_test"].tolist()
+    y = data["y"].tolist()
 
     # Initialize RepeatedKFold
     rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats)
@@ -606,16 +589,14 @@ def rkf_evaluate(data, k, n_repeats):
 
         # Split the data into training and validation sets
         train_bags = [bags[i] for i in train_index]
-        train_labels = [y_train[i] for i in train_index]
+        train_labels = [y[i] for i in train_index]
         val_bags = [bags[i] for i in test_index]
-        val_label = [y_test[i] for i in test_index]
+        val_label = [y[i] for i in test_index]
 
         train_data = np.array(train_bags)
-        train_data = normalize_mil(train_data)
         train_labels = np.array([np.array([label]) for label in train_labels])
 
         val_data = np.array(val_bags)
-        val_data = normalize_mil(val_data)
         val_labels = np.array([np.array([label]) for label in val_label])
 
         print_memory_usage()
@@ -638,6 +619,8 @@ def rkf_evaluate(data, k, n_repeats):
 
         # Evaluate the model on the validation data
         class_predictions = predict(val_dataset, trained_model)
+
+        print(class_predictions)
 
         del trained_model
         gc.collect()
@@ -719,7 +702,7 @@ def rkf_evaluate(data, k, n_repeats):
 def rkf_evaluate_with_validation(data, k, n_repeats):
     # Extract the bags and labels
     bags = data["X"].tolist()
-    y_train = data["y_train"].tolist()
+    y = data["y"].tolist()
 
     # Initialize RepeatedKFold
     rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats)
@@ -737,9 +720,9 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
 
         # Split the data into train+val and test sets
         train_val_bags = [bags[i] for i in train_val_index]
-        train_val_labels = [y_train[i] for i in train_val_index]
+        train_val_labels = [y[i] for i in train_val_index]
         test_bags = [bags[i] for i in test_index]
-        test_labels = [y_train[i] for i in test_index]
+        test_labels = [y[i] for i in test_index]
 
         # Further split train_val into train and val
         rkf_inner = RepeatedKFold(n_splits=k - 1, n_repeats=1)
@@ -753,11 +736,9 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
 
         # Convert all sets to numpy arrays
         train_data = np.array(train_bags)
-        train_data = normalize_mil(train_data)
         train_labels = np.array([np.array([label]) for label in train_labels])
 
         val_data = np.array(val_bags)
-        val_data = normalize_mil(val_data)
         val_labels = np.array([np.array([label]) for label in val_labels])
 
         test_data = np.array(test_bags)
@@ -862,10 +843,10 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
 
 
 if __name__ == "__main__":
-    # loso_evaluate(sdataset)
-    true_labels, predicted_probs, predicted_labels, results = rkf_evaluate(
-        sdataset, k=5, n_repeats=4
-    )
+    true_labels, predicted_probs, predicted_labels, results = loso_evaluate(sdataset)
+    # true_labels, predicted_probs, predicted_labels, results = rkf_evaluate(
+    #     sdataset, k=3, n_repeats=4
+    # )
     # true_labels, predicted_probs, predicted_labels = rkf_evaluate_with_validation(sdataset, k=5, n_repeats=4)
 
     # np.savez("roc_curve_pretraining.npz", true_labels=true_labels, predicted_probs=predicted_probs)

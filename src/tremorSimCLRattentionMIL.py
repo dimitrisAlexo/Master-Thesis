@@ -7,7 +7,6 @@ import os
 import time
 import gc
 import sys
-import resource
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
@@ -464,16 +463,16 @@ def train(train_dataset, val_dataset, model):
 
 
 # Adjust the paths to be relative to the current script location
-sdata_path = os.path.join("..", "data", "imu_sdata.pickle")
-tremor_sdata = unpickle_data(sdata_path)
+# sdata_path = os.path.join("..", "data", "imu_sdata.pickle")
+# tremor_sdata = unpickle_data(sdata_path)
 
 E_thres = 0.15 * 2
 Kt = 100
 num_epochs = 50
 batch_size = 1
 # {'updrs16', 'updrs20', 'updrs21', 'tremor_manual'}
-print("Forming dataset...")
-sdataset = form_dataset(tremor_sdata, E_thres, Kt, "tremor_manual", "tremor_manual")
+# print("Forming dataset...")
+# sdataset = form_tremor_dataset(tremor_sdata, E_thres, Kt, "tremor_manual", "tremor_manual")
 
 with open("sdataset.pickle", "rb") as f:
     print("Loading sdataset...")
@@ -864,7 +863,7 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
 if __name__ == "__main__":
     # loso_evaluate(sdataset)
     true_labels, predicted_probs, predicted_labels, results = rkf_evaluate(
-        sdataset, k=5, n_repeats=4
+        sdataset, k=8, n_repeats=4
     )
     # true_labels, predicted_probs, predicted_labels = rkf_evaluate_with_validation(sdataset, k=5, n_repeats=4)
 

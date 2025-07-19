@@ -36,7 +36,7 @@ def calculate_metrics(tn, fp, fn, tp):
     return accuracy, sensitivity, specificity, precision, f1_score
 
 
-def create_bag(subject, E_thres, Kt):
+def create_tremor_bag(subject, E_thres, K1):
     bag = []
     for session in subject[3]:
         num_pairs = session.shape[0] // 2
@@ -45,25 +45,25 @@ def create_bag(subject, E_thres, Kt):
             axis=0,
         )
         filtered_session = [
-            segment for segment in session if calculate_energy(segment) > E_thres
+            segment for segment in session if calculate_energy(segment) >= E_thres
         ]
         if len(filtered_session) >= 2:
             bag.extend([segment for segment in filtered_session])
     bag.sort(key=lambda segment: calculate_energy(segment), reverse=True)
-    bag = bag[:Kt]
+    bag = bag[:K1]
 
-    if len(bag) < min(10, Kt):
+    if len(bag) < min(10, K1):
         return None
 
     # Zero-padding if less than Kt segments
-    if len(bag) < Kt:
-        padding = [np.zeros((1000, 3)) for _ in range(Kt - len(bag))]
+    if len(bag) < K1:
+        padding = [np.zeros((1000, 3)) for _ in range(K1 - len(bag))]
         bag.extend(padding)
 
     return np.array(bag)
 
 
-def form_dataset(tremor_data, E_thres, Kt, train_label_str, test_label_str):
+def form_tremor_dataset(tremor_data, E_thres, K1, train_label_str, test_label_str):
     # Set of valid labels
     valid_labels = {"updrs16", "updrs20", "updrs21", "tremor_manual"}
     assert (
@@ -78,7 +78,7 @@ def form_dataset(tremor_data, E_thres, Kt, train_label_str, test_label_str):
         # Check if the subject's annotations are valid
         if isinstance(tremor_data[subject_id][1], dict):
             # Create the bag for the subject
-            bag = create_bag(tremor_data[subject_id], E_thres, Kt)
+            bag = create_tremor_bag(tremor_data[subject_id], E_thres, K1)
 
             # Get the associated label
             train_label = tremor_data[subject_id][1][train_label_str]
@@ -112,6 +112,42 @@ def form_dataset(tremor_data, E_thres, Kt, train_label_str, test_label_str):
     with open("sdataset.pickle", "wb") as f:
         pkl.dump(df, f)
 
+    return df
+
+
+def create_typing_bag(subject, K2):
+    """
+    Create a bag of the top K2 typing sessions for a subject.
+    If fewer than K2 sessions, zero-pad to K2.
+    Returns: np.array of shape (K2, 502)
+    """
+    typing_histograms = subject[0]
+    # Sort sessions by sum of histogram values (descending)
+    # sorted_sessions = sorted(typing_histograms, key=lambda x: np.sum(x), reverse=True)
+    bag = typing_histograms[:K2]
+    # Zero-pad if less than K2
+    if len(bag) < K2:
+        padding = [np.zeros(502) for _ in range(K2 - len(bag))]
+        bag.extend(padding)
+    return np.array(bag)
+
+
+def form_typing_dataset(typing_sdata, imu_sdata, K2):
+    """
+    For each subject present in both typing_sdata and imu_sdata, create a typing bag and get the label.
+    Returns: DataFrame with columns ["X", "y"]
+    """
+    data = []
+    common_subjects = set(typing_sdata.keys()) & set(imu_sdata.keys())
+    for subject_id in common_subjects:
+        if typing_sdata[subject_id][0] and len(typing_sdata[subject_id][0]) >= 5:
+            subject = typing_sdata[subject_id]
+            bag = create_typing_bag(subject, K2)
+            label = subject[-1]  # Label is last element, 0 or 1
+            data.append((bag, label))
+    df = pd.DataFrame(data, columns=["X", "y"])
+    with open("typing_sdataset.pickle", "wb") as f:
+        pkl.dump(df, f)
     return df
 
 
