@@ -132,14 +132,13 @@ def create_typing_bag(subject, K2):
     return np.array(bag)
 
 
-def form_typing_dataset(typing_sdata, imu_sdata, K2):
+def form_typing_dataset(typing_sdata, K2):
     """
     For each subject present in both typing_sdata and imu_sdata, create a typing bag and get the label.
     Returns: DataFrame with columns ["X", "y"]
     """
     data = []
-    common_subjects = set(typing_sdata.keys()) & set(imu_sdata.keys())
-    for subject_id in common_subjects:
+    for subject_id in typing_sdata.keys():
         if typing_sdata[subject_id][0] and len(typing_sdata[subject_id][0]) >= 5:
             subject = typing_sdata[subject_id]
             bag = create_typing_bag(subject, K2)
@@ -148,6 +147,121 @@ def form_typing_dataset(typing_sdata, imu_sdata, K2):
     df = pd.DataFrame(data, columns=["X", "y"])
     with open("typing_sdataset.pickle", "wb") as f:
         pkl.dump(df, f)
+    return df
+
+
+def form_fusion_dataset(
+    tremor_data, typing_sdata, E_thres, K1, K2, tremor_label_str="tremor_manual"
+):
+    """
+    Create a fusion dataset using subjects common to both tremor_data and typing_sdata.
+    Each subject consists of:
+    - X1: tremor bags (shape: K1, 1000, 3)
+    - X2: typing bags (shape: K2, 502)
+    - y: multi-label array [Tremor, FMI, PD] where PD = Tremor AND FMI
+
+    Args:
+        tremor_data: Dictionary with tremor subject data
+        typing_sdata: Dictionary with typing subject data
+        E_thres: Energy threshold for tremor bag filtering
+        K1: Number of tremor segments per bag
+        K2: Number of typing sessions per bag
+        tremor_label_str: Which tremor label to use (default: "tremor_manual")
+
+    Returns:
+        DataFrame with columns ["X1", "X2", "y"] where y is [Tremor, FMI, PD]
+    """
+    # Find common subject IDs
+    tremor_subject_ids = set(tremor_data.keys())
+    typing_subject_ids = set(typing_sdata.keys())
+
+    valid_labels = {"updrs16", "updrs20", "updrs21", "tremor_manual"}
+    assert (
+        tremor_label_str in valid_labels
+    ), f"tremor_label_str '{tremor_label_str}' is not valid."
+
+    # Process tremor data
+    tremor_processed = {}
+    for subject_id in tremor_subject_ids:
+        tremor_subject = tremor_data[subject_id]
+
+        # Validate tremor subject data
+        if not isinstance(tremor_subject[1], dict):
+            continue
+
+        # Create tremor bag
+        tremor_bag = create_tremor_bag(tremor_subject, E_thres, K1)
+        if tremor_bag is None:
+            continue
+
+        # Get tremor label
+        if tremor_label_str == "updrs20":
+            tremor_label = (
+                0
+                if tremor_subject[1]["updrs20_right"]
+                + tremor_subject[1]["updrs20_left"]
+                == 0
+                else 1
+            )
+        elif tremor_label_str == "updrs21":
+            tremor_label = (
+                0
+                if tremor_subject[1]["updrs21_right"]
+                + tremor_subject[1]["updrs21_left"]
+                == 0
+                else 1
+            )
+        else:
+            tremor_label = 0 if tremor_subject[1][tremor_label_str] == 0 else 1
+
+        tremor_processed[subject_id] = (tremor_bag, tremor_label)
+
+    print(f"Valid tremor subjects: {len(tremor_processed)}")
+
+    # Process typing data
+    typing_processed = {}
+    for subject_id in typing_subject_ids:
+        typing_subject = typing_sdata[subject_id]
+
+        # Validate typing subject data
+        if not (typing_subject[0] and len(typing_subject[0]) >= 5):
+            continue
+
+        # Create typing bag
+        typing_bag = create_typing_bag(typing_subject, K2)
+
+        # Get FMI label from typing data (last element)
+        fmi_label = typing_subject[-1]
+
+        typing_processed[subject_id] = (typing_bag, fmi_label)
+
+    print(f"Valid typing subjects: {len(typing_processed)}")
+
+    # Combine processed data
+    data = []
+    final_subject_ids = set(tremor_processed.keys()) & set(typing_processed.keys())
+
+    for subject_id in final_subject_ids:
+        tremor_bag, tremor_label = tremor_processed[subject_id]
+        typing_bag, fmi_label = typing_processed[subject_id]
+
+        # PD is positive if BOTH Tremor and FMI are positive
+        pd_label = 1 if (tremor_label == 1 or fmi_label == 1) else 0
+
+        # Create multi-label array [Tremor, FMI, PD]
+        multi_label = [tremor_label, fmi_label, pd_label]
+
+        data.append((subject_id, tremor_bag, typing_bag, multi_label))
+
+    print(f"Valid fusion subjects: {len(data)}")
+
+    # Create DataFrame with subject_id column
+    df = pd.DataFrame(data, columns=["subject_id", "X1", "X2", "y"])
+
+    # Save to pickle file
+    with open("fusion_dataset.pickle", "wb") as f:
+        pkl.dump(df, f)
+
     return df
 
 

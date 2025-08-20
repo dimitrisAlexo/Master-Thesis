@@ -25,14 +25,6 @@ from sklearn.model_selection import LeaveOneOut
 from sklearn.model_selection import RepeatedKFold
 from sklearn.metrics import confusion_matrix
 
-start = time.time()
-
-plt.ion()
-
-np.set_printoptions(threshold=sys.maxsize)
-
-os.environ["tf_gpu_allocator"] = "cuda_malloc_async"
-
 
 def print_memory_usage():
     process = psutil.Process()
@@ -40,27 +32,37 @@ def print_memory_usage():
     print(f"Memory Usage: {mem_info.rss / (1024 ** 2):.2f} MB")
 
 
-# os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # run on CPU
+def setup_environment():
+    """Setup environment configurations for training"""
+    start = time.time()
 
-os.environ["XLA_FLAGS"] = "--xla_gpu_strict_conv_algorithm_picker=false"
+    plt.ion()
 
-if tf.config.list_physical_devices("GPU"):
-    print("Using GPU...")
-else:
-    print("Using CPU...")
+    np.set_printoptions(threshold=sys.maxsize)
 
-# Mixed precision policy
-policy = mixed_precision.Policy("mixed_float16")
-mixed_precision.set_global_policy(policy)
-print("Using mixed precision...")
+    os.environ["tf_gpu_allocator"] = "cuda_malloc_async"
+    # os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # run on CPU
+    os.environ["XLA_FLAGS"] = "--xla_gpu_strict_conv_algorithm_picker=false"
+
+    if tf.config.list_physical_devices("GPU"):
+        print("Using GPU...")
+    else:
+        print("Using CPU...")
+
+    # Mixed precision policy
+    policy = mixed_precision.Policy("mixed_float16")
+    mixed_precision.set_global_policy(policy)
+    print("Using mixed precision...")
+
+    return start
 
 
 # k.set_floatx("float16")
 
 
 # === MODE SELECTION ===
+# Default MODE - can be overridden when importing
 MODE = "baseline"
-assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
 
 
 class MILAttentionLayer(layers.Layer):
@@ -103,7 +105,7 @@ class MILAttentionLayer(layers.Layer):
 
     def build(self, input_shape):
         # Input shape.
-        input_dim = M
+        input_dim = input_shape[-1]  # Last dimension is the feature dimension
 
         self.v_weight_params = self.add_weight(
             shape=(input_dim, self.weight_params_dim),
@@ -164,69 +166,6 @@ class MILAttentionLayer(layers.Layer):
         return ops.tensordot(instance, self.w_weight_params, axes=1)
 
 
-def embeddings_function(M, use_batchnorm=True):
-    layers_list = [
-        # --- Layer 1 ---
-        layers.ZeroPadding1D(padding=1),
-        layers.Conv1D(filters=32, kernel_size=8, padding="valid"),
-    ]
-    if use_batchnorm:
-        layers_list.append(layers.BatchNormalization())
-    layers_list += [
-        layers.LeakyReLU(negative_slope=0.2),
-        layers.MaxPooling1D(pool_size=2),
-        # --- Layer 2 ---
-        layers.ZeroPadding1D(padding=1),
-        layers.Conv1D(filters=32, kernel_size=8, padding="valid"),
-    ]
-    if use_batchnorm:
-        layers_list.append(layers.BatchNormalization())
-    layers_list += [
-        layers.LeakyReLU(negative_slope=0.2),
-        layers.MaxPooling1D(pool_size=2),
-        # --- Layer 3 ---
-        layers.ZeroPadding1D(padding=1),
-        layers.Conv1D(filters=16, kernel_size=16, padding="valid"),
-    ]
-    if use_batchnorm:
-        layers_list.append(layers.BatchNormalization())
-    layers_list += [
-        layers.LeakyReLU(negative_slope=0.2),
-        layers.MaxPooling1D(pool_size=2),
-        # --- Layer 4 ---
-        layers.ZeroPadding1D(padding=1),
-        layers.Conv1D(filters=16, kernel_size=16, padding="valid"),
-    ]
-    if use_batchnorm:
-        layers_list.append(layers.BatchNormalization())
-    layers_list += [
-        layers.LeakyReLU(negative_slope=0.2),
-        layers.MaxPooling1D(pool_size=2),
-        # --- Flatten and Dense ---
-        layers.Flatten(),
-        layers.Dense(M),
-    ]
-    return keras.Sequential(layers_list, name="embeddings_function")
-
-
-def final_classifier():
-    return keras.Sequential(
-        [
-            # Layer 1: Dense M → 32, Leaky-ReLU (α = 0.2), Dropout p = 0.2
-            layers.Dense(32, name="dense_1"),
-            layers.LeakyReLU(negative_slope=0.2, name="leaky_relu_1"),
-            layers.Dropout(0.2, name="dropout_1"),
-            # Layer 2: Dense 32 → 16, Leaky-ReLU (α = 0.2), Dropout p = 0.2
-            layers.Dense(16, name="dense_2"),
-            layers.LeakyReLU(negative_slope=0.2, name="leaky_relu_2"),
-            layers.Dropout(0.2, name="dropout_2"),
-            # Layer 3: Dense 16 → 2, 2-way softmax
-            layers.Dense(2, activation="softmax", name="output"),
-        ],
-        name="final_classifier",
-    )
-
-
 class MILModel(keras.Model):
     def __init__(self, input_shape, M, weight_params_dim=16, use_gated=False, **kwargs):
         super(MILModel, self).__init__(**kwargs)
@@ -249,7 +188,7 @@ class MILModel(keras.Model):
         self.reshape_to_embeddings = layers.Lambda(
             lambda x: tf.reshape(x, (-1, self.Ws, self.C))
         )
-        self.embeddings_function = embeddings_function(
+        self.embeddings_network = self.embeddings_function(
             self.M, use_batchnorm=use_batchnorm
         )
         self.reshape_to_attention = layers.Lambda(
@@ -265,13 +204,74 @@ class MILModel(keras.Model):
         self.sum_layer = layers.Lambda(
             lambda x: tf.reduce_sum(x, axis=1), name="sum_layer"
         )
-        self.classifier = final_classifier()
+        self.classifier = self.final_classifier()
 
         # Finetune only for simclr/federated
         if MODE in ["simclr", "federated"]:
             self.finetune()
         else:
             print("Finetune skipped for baseline mode.")
+
+    def embeddings_function(self, M, use_batchnorm=True):
+        layers_list = [
+            # --- Layer 1 ---
+            layers.ZeroPadding1D(padding=1),
+            layers.Conv1D(filters=32, kernel_size=8, padding="valid"),
+        ]
+        if use_batchnorm:
+            layers_list.append(layers.BatchNormalization())
+        layers_list += [
+            layers.LeakyReLU(negative_slope=0.2),
+            layers.MaxPooling1D(pool_size=2),
+            # --- Layer 2 ---
+            layers.ZeroPadding1D(padding=1),
+            layers.Conv1D(filters=32, kernel_size=8, padding="valid"),
+        ]
+        if use_batchnorm:
+            layers_list.append(layers.BatchNormalization())
+        layers_list += [
+            layers.LeakyReLU(negative_slope=0.2),
+            layers.MaxPooling1D(pool_size=2),
+            # --- Layer 3 ---
+            layers.ZeroPadding1D(padding=1),
+            layers.Conv1D(filters=16, kernel_size=16, padding="valid"),
+        ]
+        if use_batchnorm:
+            layers_list.append(layers.BatchNormalization())
+        layers_list += [
+            layers.LeakyReLU(negative_slope=0.2),
+            layers.MaxPooling1D(pool_size=2),
+            # --- Layer 4 ---
+            layers.ZeroPadding1D(padding=1),
+            layers.Conv1D(filters=16, kernel_size=16, padding="valid"),
+        ]
+        if use_batchnorm:
+            layers_list.append(layers.BatchNormalization())
+        layers_list += [
+            layers.LeakyReLU(negative_slope=0.2),
+            layers.MaxPooling1D(pool_size=2),
+            # --- Flatten and Dense ---
+            layers.Flatten(),
+            layers.Dense(M),
+        ]
+        return keras.Sequential(layers_list, name="embeddings_function")
+
+    def final_classifier(self):
+        return keras.Sequential(
+            [
+                # Layer 1: Dense M → 32, Leaky-ReLU (α = 0.2), Dropout p = 0.2
+                layers.Dense(32, name="dense_1"),
+                layers.LeakyReLU(negative_slope=0.2, name="leaky_relu_1"),
+                layers.Dropout(0.2, name="dropout_1"),
+                # Layer 2: Dense 32 → 16, Leaky-ReLU (α = 0.2), Dropout p = 0.2
+                layers.Dense(16, name="dense_2"),
+                layers.LeakyReLU(negative_slope=0.2, name="leaky_relu_2"),
+                layers.Dropout(0.2, name="dropout_2"),
+                # Layer 3: Dense 16 → 2, 2-way softmax
+                layers.Dense(2, activation="softmax", name="output"),
+            ],
+            name="final_classifier",
+        )
 
     @property
     def optimizer(self):
@@ -297,7 +297,7 @@ class MILModel(keras.Model):
         # Forward pass through the model components
         mask_layer = self.mask_layer(inputs)
         embeddings = self.reshape_to_embeddings(inputs)
-        embeddings = self.embeddings_function(embeddings)
+        embeddings = self.embeddings_network(embeddings)
         embeddings = self.reshape_to_attention(embeddings)
 
         # Attention
@@ -321,9 +321,9 @@ class MILModel(keras.Model):
         else:
             return  # No finetune for baseline
         try:
-            self.embeddings_function.build(input_shape=(None, self.Ws, self.C))
-            self.embeddings_function.load_weights(weights_file)
-            self.embeddings_function.trainable = False  # Freeze encoder
+            self.embeddings_network.build(input_shape=(None, self.Ws, self.C))
+            self.embeddings_network.load_weights(weights_file)
+            self.embeddings_network.trainable = False  # Freeze encoder
             print(f"Successfully loaded weights from '{weights_file}' into encoder.")
         except Exception as e:
             print(f"Failed to load weights: {e}")
@@ -343,11 +343,11 @@ class MILModel(keras.Model):
     # SimCLR/Federated train step (with encoder freezing/unfreezing)
     def freeze_encoder(self):
         """Freeze the encoder by setting trainable=False."""
-        self.embeddings_function.trainable = False
+        self.embeddings_network.trainable = False
 
     def unfreeze_encoder(self):
         """Unfreeze the encoder by setting trainable=True."""
-        self.embeddings_function.trainable = True
+        self.embeddings_network.trainable = True
 
     def train_step(self, data):
         # Unpack data
@@ -359,7 +359,7 @@ class MILModel(keras.Model):
             loss = self.compute_loss(x, y, y_pred)
 
         # Separate parameters for different learning rates
-        embeddings_vars = self.embeddings_function.trainable_variables
+        embeddings_vars = self.embeddings_network.trainable_variables
         other_vars = self.trainable_variables[len(embeddings_vars) :]
         gradients = tape.gradient(loss, self.trainable_variables)
         embeddings_grads = gradients[: len(embeddings_vars)]
@@ -383,8 +383,7 @@ class ClearMemory(callbacks.Callback):
         print("Memory cleared.")
 
 
-def lr_schedule(epoch, lr):
-    total_epochs = num_epochs
+def lr_schedule(epoch, lr, total_epochs=50):
     decay_start_epoch = (
         total_epochs // 2
     )  # Start decay at the halfway point of the training
@@ -393,14 +392,16 @@ def lr_schedule(epoch, lr):
     return lr
 
 
-def train(train_dataset, val_dataset, model):
+def train(train_dataset, val_dataset, model, num_epochs=50, batch_size=1):
     # Train model.
     # Prepare callbacks.
     # Path where to save best weights.
 
     # Callbacks
     clear_memory = ClearMemory()
-    lr_scheduler = callbacks.LearningRateScheduler(lr_schedule)
+    lr_scheduler = callbacks.LearningRateScheduler(
+        lambda epoch, lr: lr_schedule(epoch, lr, num_epochs)
+    )
 
     # Mode-specific training logic
     if MODE == "baseline":
@@ -462,33 +463,12 @@ def train(train_dataset, val_dataset, model):
     return model
 
 
-# Adjust the paths to be relative to the current script location
-# sdata_path = os.path.join("..", "data", "imu_sdata.pickle")
-# tremor_sdata = unpickle_data(sdata_path)
-
-E_thres = 0.15 * 2
-Kt = 100
-num_epochs = 50
-batch_size = 1
-# {'updrs16', 'updrs20', 'updrs21', 'tremor_manual'}
-# print("Forming dataset...")
-# sdataset = form_tremor_dataset(tremor_sdata, E_thres, Kt, "tremor_manual", "tremor_manual")
-
-with open("sdataset.pickle", "rb") as f:
-    print("Loading sdataset...")
-    sdataset = pkl.load(f)
-
-print(sdataset)
-
-# Building model(s).
-Kt, Ws, C = np.array(sdataset["X"])[0].shape
-input_shape = (Kt, Ws, C)
-print(input_shape)
-M = 64
-model = MILModel(input_shape=input_shape, M=M)
-
-# Show single model architecture.
-print(model.summary())
+# Default parameters - can be overridden when importing
+DEFAULT_E_THRES = 0.15 * 2
+DEFAULT_KT = 100
+DEFAULT_NUM_EPOCHS = 50
+DEFAULT_BATCH_SIZE = 1
+DEFAULT_M = 64
 
 
 def predict(dataset, trained_model):
@@ -502,11 +482,16 @@ def predict(dataset, trained_model):
     return predictions
 
 
-def loso_evaluate(data):
+def loso_evaluate(data, input_shape=None, M=64, batch_size=1):
     # Extract the bags and labels
     bags = data["X"].tolist()
     y_train = data["y_train"].tolist()
     y_test = data["y_test"].tolist()
+
+    # Set default input shape if not provided
+    if input_shape is None:
+        Kt, Ws, C = np.array(data["X"])[0].shape
+        input_shape = (Kt, Ws, C)
 
     # Initialize LeaveOneOut
     loo = LeaveOneOut()
@@ -583,11 +568,16 @@ def loso_evaluate(data):
     return
 
 
-def rkf_evaluate(data, k, n_repeats):
+def rkf_evaluate(data, k, n_repeats, input_shape=None, M=64, batch_size=1):
     # Extract the bags and labels
     bags = data["X"].tolist()
     y_train = data["y_train"].tolist()
     y_test = data["y_test"].tolist()
+
+    # Set default input shape if not provided
+    if input_shape is None:
+        Kt, Ws, C = np.array(data["X"])[0].shape
+        input_shape = (Kt, Ws, C)
 
     # Initialize RepeatedKFold
     rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats)
@@ -715,10 +705,17 @@ def rkf_evaluate(data, k, n_repeats):
     return all_true_labels, all_predicted_probs, all_predicted_labels, results
 
 
-def rkf_evaluate_with_validation(data, k, n_repeats):
+def rkf_evaluate_with_validation(
+    data, k, n_repeats, input_shape=None, M=64, batch_size=1
+):
     # Extract the bags and labels
     bags = data["X"].tolist()
     y_train = data["y_train"].tolist()
+
+    # Set default input shape if not provided
+    if input_shape is None:
+        Kt, Ws, C = np.array(data["X"])[0].shape
+        input_shape = (Kt, Ws, C)
 
     # Initialize RepeatedKFold
     rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats)
@@ -861,11 +858,49 @@ def rkf_evaluate_with_validation(data, k, n_repeats):
 
 
 if __name__ == "__main__":
-    # loso_evaluate(sdataset)
+    # Setup environment and start timer
+    start = setup_environment()
+
+    # Validate MODE
+    assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
+
+    # Parameters
+    E_thres = 0.15 * 2
+    Kt = 100
+    num_epochs = 50
+    batch_size = 1
+    M = 64
+
+    # Load dataset
+    # Adjust the paths to be relative to the current script location
+    # sdata_path = os.path.join("..", "data", "imu_sdata.pickle")
+    # tremor_sdata = unpickle_data(sdata_path)
+    # sdataset = form_tremor_dataset(tremor_sdata, E_thres, Kt, "tremor_manual", "tremor_manual")
+
+    with open("sdataset.pickle", "rb") as f:
+        print("Loading sdataset...")
+        sdataset = pkl.load(f)
+
+    print(sdataset)
+
+    # Building model(s).
+    Kt, Ws, C = np.array(sdataset["X"])[0].shape
+    input_shape = (Kt, Ws, C)
+    print(input_shape)
+
+    model = MILModel(input_shape=input_shape, M=M)
+
+    # Show single model architecture.
+    print(model.summary())
+
+    # Run evaluation
+    # loso_evaluate(sdataset, input_shape, M, batch_size)
     true_labels, predicted_probs, predicted_labels, results = rkf_evaluate(
-        sdataset, k=8, n_repeats=4
+        sdataset, k=8, n_repeats=4, input_shape=input_shape, M=M, batch_size=batch_size
     )
-    # true_labels, predicted_probs, predicted_labels = rkf_evaluate_with_validation(sdataset, k=5, n_repeats=4)
+    # true_labels, predicted_probs, predicted_labels = rkf_evaluate_with_validation(
+    #     sdataset, k=5, n_repeats=4, input_shape=input_shape, M=M, batch_size=batch_size
+    # )
 
     # np.savez("roc_curve_pretraining.npz", true_labels=true_labels, predicted_probs=predicted_probs)
     # np.savez("roc_curve_no_pretraining.npz", true_labels=true_labels, predicted_probs=predicted_probs)

@@ -97,6 +97,8 @@ tremor_gdata = unpickle_data("../data/imu_gdata.pickle")
 # Count common keys between kept typing_sdata subjects and tremor_sdata
 print("length of typing_sdata:", len(typing_sdata.keys()))
 print("length of tremor_sdata:", len(tremor_sdata.keys()))
+print("Number of typing_sdata subjects:", len(non_empty_subjects))
+print("Number of tremor_sdata subjects:", len(tremor_sdata.keys()))
 common_sdata_keys = set(non_empty_subjects) & set(tremor_sdata.keys())
 print(
     f"Number of common keys in kept typing_sdata subjects and tremor_sdata: {len(common_sdata_keys)}"

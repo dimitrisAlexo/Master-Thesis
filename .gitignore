@@ -5,3 +5,4 @@ __pycache__/
 *.h5
 *.pickle
 *.json
+*.pkl
