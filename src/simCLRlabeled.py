@@ -78,7 +78,7 @@ learning_rate = 0.001
 # sdata_path = os.path.join("..", "data", "tremor_sdata.pickle")
 # tremor_gdata = unpickle_data(gdata_path)
 # tremor_sdata = unpickle_data(sdata_path)
-# gdataset = form_unlabeled_dataset(tremor_gdata, tremor_sdata, E_thres, Kt)
+# gdataset = form_unlabeled_tremor_dataset(tremor_gdata, tremor_sdata, E_thres, Kt)
 
 with open("unlabeled_data.pickle", "rb") as f:
     gdataset = pkl.load(f)

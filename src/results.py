@@ -1,11 +1,24 @@
-# from simCLRattentionMIL import *
-from typingSimCLRattentionMIL import *
-
+# Import functions but not execute main blocks
+from typingSimCLRattentionMIL import (
+    rkf_evaluate,
+    loso_evaluate,
+    setup_environment,
+    MODE,
+)
+from tremorSimCLRattentionMIL import (
+    rkf_evaluate as tremor_rkf_evaluate,
+    loso_evaluate as tremor_loso_evaluate,
+)
+from utils import unpickle_data
+import os
+import gc
+import numpy as np
 import json
+import pickle as pkl
 
 
 def run_multiple_tremor_experiments(
-    sdataset, k=5, n_repeats=5, repetitions=10, save_path="results.json"
+    sdataset, k=5, n_repeats=5, repetitions=10, save_path="results_tremor.json"
 ):
     """
     Run the rkf_evaluate experiment multiple times, calculate the average and standard deviation
@@ -41,8 +54,8 @@ def run_multiple_tremor_experiments(
     for i in range(start_iteration, repetitions):
         print(f"\033[91mRepetition {i + 1}/{repetitions}\033[0m")
         try:
-            # Perform the rkf evaluation
-            _, _, _, results = rkf_evaluate(sdataset, k=k, n_repeats=n_repeats)
+            # Perform the rkf evaluation using tremor functions
+            _, _, _, results = tremor_rkf_evaluate(sdataset, k=k, n_repeats=n_repeats)
 
             # Append results to lists
             accuracy_list.append(results["final_accuracy"])
@@ -198,7 +211,48 @@ def run_multiple_typing_experiments(
     return metrics_summary
 
 
-# RESULTS
-print("RESULTS")
-# run_multiple_tremor_experiments(sdataset, k=5, n_repeats=5, repetitions=10)
-run_multiple_typing_experiments(sdataset, repetitions=10)
+def load_typing_dataset():
+    """Load the typing supervised dataset"""
+    try:
+        with open("typing_sdataset.pickle", "rb") as f:
+            print("Loading typing sdataset...")
+            sdataset = pkl.load(f)
+        return sdataset
+    except FileNotFoundError:
+        print(
+            "typing_sdataset.pickle not found. Please run the dataset creation first."
+        )
+        return None
+
+
+def load_tremor_dataset():
+    """Load the tremor supervised dataset"""
+    try:
+        with open("sdataset.pickle", "rb") as f:
+            print("Loading tremor sdataset...")
+            sdataset = pkl.load(f)
+        return sdataset
+    except FileNotFoundError:
+        print("sdataset.pickle not found. Please run the dataset creation first.")
+        return None
+
+
+if __name__ == "__main__":
+    # Setup environment
+    start = setup_environment()
+
+    print("RESULTS")
+
+    # Load datasets
+    typing_sdataset = load_typing_dataset()
+    tremor_sdataset = load_tremor_dataset()
+
+    # Run typing experiments if dataset is available
+    if typing_sdataset is not None:
+        print("Running typing experiments...")
+        run_multiple_typing_experiments(typing_sdataset, repetitions=10)
+
+    # Run tremor experiments if dataset is available (uncomment to run)
+    # if tremor_sdataset is not None:
+    #     print("Running tremor experiments...")
+    #     run_multiple_tremor_experiments(tremor_sdataset, k=5, n_repeats=5, repetitions=10)

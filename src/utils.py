@@ -102,12 +102,12 @@ def form_tremor_dataset(tremor_data, E_thres, K1, train_label_str, test_label_st
             else:
                 test_label = 0 if tremor_data[subject_id][1][test_label_str] == 0 else 1
 
-            # Append the tuple (X, y) to the data list
+            # Append the tuple (subject_id, X, y) to the data list
             if bag is not None:
-                data.append((bag, train_label, test_label))
+                data.append((subject_id, bag, train_label, test_label))
 
     # Create a DataFrame from the data list
-    df = pd.DataFrame(data, columns=["X", "y_train", "y_test"])
+    df = pd.DataFrame(data, columns=["subject_id", "X", "y_train", "y_test"])
 
     with open("sdataset.pickle", "wb") as f:
         pkl.dump(df, f)
@@ -143,11 +143,48 @@ def form_typing_dataset(typing_sdata, K2):
             subject = typing_sdata[subject_id]
             bag = create_typing_bag(subject, K2)
             label = subject[-1]  # Label is last element, 0 or 1
-            data.append((bag, label))
-    df = pd.DataFrame(data, columns=["X", "y"])
+            data.append((subject_id, bag, label))
+    df = pd.DataFrame(data, columns=["subject_id", "X", "y"])
     with open("typing_sdataset.pickle", "wb") as f:
         pkl.dump(df, f)
     return df
+
+
+def form_unlabeled_typing_dataset(typing_gdata, typing_sdata, K2):
+    print("Length of typing_gdata: ", len(typing_gdata))
+    # Exclude subjects that are already in the supervised dataset
+    typing_gdata = {
+        key: value for key, value in typing_gdata.items() if key not in typing_sdata
+    }
+    print("Length of typing_gdata after filtering: ", len(typing_gdata))
+
+    data = []
+    counter = 0
+
+    for subject_id in typing_gdata.keys():
+        # Check if subject has valid typing data
+        if typing_gdata[subject_id][0] and len(typing_gdata[subject_id][0]) >= 5:
+            typing_histograms = typing_gdata[subject_id][0]
+            counter += 1
+            print(f"Processed subject {counter}: {subject_id}")
+            print(f"Number of typing sessions: {len(typing_histograms)}")
+            # Add all typing histograms from this subject to the unlabeled data
+            data.extend(typing_histograms[:K2])
+
+    print("Total subjects processed: ", counter)
+    print("Total typing sessions collected: ", len(data))
+
+    data = np.array(data)
+
+    # Shuffle the data
+    indices = np.random.permutation(data.shape[0])
+    data = data[indices]
+
+    # Save to pickle file
+    with open("unlabeled_typing_data.pickle", "wb") as f:
+        pkl.dump(data, f)
+
+    return data
 
 
 def form_fusion_dataset(
@@ -306,7 +343,7 @@ def filter_data(subject, E_thres, Kt):
     return np.array(bag)
 
 
-def form_unlabeled_dataset(tremor_gdata, tremor_sdata, E_thres, Kt):
+def form_unlabeled_tremor_dataset(tremor_gdata, tremor_sdata, E_thres, Kt):
     print("Length of tremor_gdata: ", len(tremor_gdata))
     tremor_gdata = {
         key: value for key, value in tremor_gdata.items() if key not in tremor_sdata

@@ -62,7 +62,7 @@ def setup_environment():
 
 # === MODE SELECTION ===
 # Default MODE - can be overridden when importing
-MODE = "baseline"
+MODE = "simclr"
 
 
 class MILAttentionLayer(layers.Layer):
@@ -276,7 +276,7 @@ class MILModel(keras.Model):
     def finetune(self):
         """Load pre-trained weights for the embeddings function."""
         if MODE == "simclr":
-            weights_file = "embeddings.weights.h5"
+            weights_file = "typing_embeddings.weights.h5"
         elif MODE == "federated":
             weights_file = "federated.weights.h5"
         else:

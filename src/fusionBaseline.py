@@ -93,7 +93,7 @@ def load_tremor_dataset():
     print("Loading tremor dataset...")
     with open("sdataset.pickle", "rb") as f:
         tremor_dataset = pkl.load(f)
-    print(f"Tremor dataset loaded: {tremor_dataset}")
+    # print(f"Tremor dataset loaded: {tremor_dataset}")
     return tremor_dataset
 
 
@@ -102,11 +102,11 @@ def load_typing_dataset():
     print("Loading typing dataset...")
     with open("typing_sdataset.pickle", "rb") as f:
         typing_dataset = pkl.load(f)
-    print(f"Typing dataset loaded: {typing_dataset}")
+    # print(f"Typing dataset loaded: {typing_dataset}")
     return typing_dataset
 
 
-def pretrain_tremor_branch():
+def pretrain_tremor_branch(subject_exclude_id=None):
     """
     Pretrain the tremor branch using all available tremor data.
     Returns the trained model for later weight extraction.
@@ -117,6 +117,15 @@ def pretrain_tremor_branch():
 
     # Load tremor dataset
     tremor_dataset = load_tremor_dataset()
+
+    # Exclude subject if specified
+    if subject_exclude_id is not None:
+        tremor_dataset = tremor_dataset[
+            tremor_dataset["subject_id"] != subject_exclude_id
+        ]
+        print(
+            f"Excluded subject {subject_exclude_id}. Remaining subjects: {len(tremor_dataset)}"
+        )
 
     # Get input shape and create model
     Kt, Ws, C = np.array(tremor_dataset["X"])[0].shape
@@ -153,7 +162,13 @@ def pretrain_tremor_branch():
 
     # Train the tremor model
     print("Starting tremor branch training...")
-    trained_tremor_model = tremor_train(train_dataset, train_dataset, tremor_model)
+    trained_tremor_model = tremor_train(
+        train_dataset,
+        train_dataset,
+        tremor_model,
+        num_epochs=num_epochs,
+        batch_size=batch_size,
+    )
 
     # Save tremor branch weights
     print("Saving tremor branch weights...")
@@ -170,7 +185,7 @@ def pretrain_tremor_branch():
     return trained_tremor_model
 
 
-def pretrain_typing_branch():
+def pretrain_typing_branch(subject_exclude_id=None):
     """
     Pretrain the typing branch using all available typing data.
     Returns the trained model for later weight extraction.
@@ -181,6 +196,15 @@ def pretrain_typing_branch():
 
     # Load typing dataset
     typing_dataset = load_typing_dataset()
+
+    # Exclude subject if specified
+    if subject_exclude_id is not None:
+        typing_dataset = typing_dataset[
+            typing_dataset["subject_id"] != subject_exclude_id
+        ]
+        print(
+            f"Excluded subject {subject_exclude_id}. Remaining subjects: {len(typing_dataset)}"
+        )
 
     # Get input shape and create model
     K2, B = np.array(typing_dataset["X"])[0].shape
@@ -216,7 +240,13 @@ def pretrain_typing_branch():
 
     # Train the typing model
     print("Starting typing branch training...")
-    trained_typing_model = typing_train(train_dataset, train_dataset, typing_model)
+    trained_typing_model = typing_train(
+        train_dataset,
+        train_dataset,
+        typing_model,
+        num_epochs=num_epochs,
+        batch_size=batch_size,
+    )
 
     # Save typing branch weights
     print("Saving typing branch weights...")
@@ -233,11 +263,13 @@ def pretrain_typing_branch():
     return trained_typing_model
 
 
-def run_pretraining():
+def run_pretraining(subject_exclude_id=None):
     """
     Run the complete pretraining process for both branches
     """
     print("Starting fusion model pretraining process...")
+    if subject_exclude_id is not None:
+        print(f"Excluding subject {subject_exclude_id} from pretraining")
     print(
         f"Tremor parameters: Kt={TREMOR_KT}, M={TREMOR_M}, epochs={TREMOR_NUM_EPOCHS}"
     )
@@ -246,7 +278,7 @@ def run_pretraining():
     )
 
     # Step 1: Pretrain tremor branch
-    tremor_model = pretrain_tremor_branch()
+    tremor_model = pretrain_tremor_branch(subject_exclude_id)
 
     # Clear memory
     del tremor_model
@@ -254,7 +286,7 @@ def run_pretraining():
     k.clear_session()
 
     # Step 2: Pretrain typing branch
-    typing_model = pretrain_typing_branch()
+    typing_model = pretrain_typing_branch(subject_exclude_id)
 
     # Clear memory
     del typing_model
@@ -289,9 +321,6 @@ def create_endtask_dataset():
 
     Returns: pandas DataFrame with columns ["X1", "X2", "y"]
     """
-    print("\n" + "=" * 50)
-    print("CREATING ENDTASK DATASET USING form_fusion_dataset")
-    print("=" * 50)
 
     # Option 1: Load pre-computed dataset from pickle
     print("Loading fusion dataset from pickle...")
@@ -527,6 +556,10 @@ def fusion_loso_evaluate(endtask_df):
         print(f"\nFold {fold + 1}/{n_subjects}")
         print(f"Training subjects: {len(train_idx)}, Test subject: {test_idx[0]}")
 
+        # Get test subject ID for exclusion from pretraining
+        test_subject_id = endtask_df.iloc[test_idx[0]]["subject_id"]
+        print(f"Test subject ID: {test_subject_id}")
+
         # Prepare training data from DataFrame
         train_tremor_data = [endtask_df.iloc[i]["X1"] for i in train_idx]
         train_typing_data = [endtask_df.iloc[i]["X2"] for i in train_idx]
@@ -562,6 +595,10 @@ def fusion_loso_evaluate(endtask_df):
             ((test_tremor_array, test_typing_array), test_labels_array)
         )
         test_dataset = test_dataset.batch(FUSION_BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+
+        # Run pretraining for this fold
+        print("Running pretraining for this fold...")
+        run_pretraining(subject_exclude_id=test_subject_id)
 
         # Create and train fusion model
         fusion_model = FusionModel(
@@ -797,13 +834,8 @@ def run_fusion_experiment(repetitions=1):
 
 if __name__ == "__main__":
     # Choose what to run
-    run_pretraining_phase = True  # Set to True if you want to run pretraining again
     run_fusion_phase = True  # Set to True to run fusion experiment
-    fusion_repetitions = 5  # Number of LOSO repetitions to run
-
-    if run_pretraining_phase:
-        print("Running pretraining phase...")
-        run_pretraining()
+    fusion_repetitions = 1  # Number of LOSO repetitions to run
 
     if run_fusion_phase:
         print("Running fusion phase...")
