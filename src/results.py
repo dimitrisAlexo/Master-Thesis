@@ -115,7 +115,7 @@ def run_multiple_tremor_experiments(
 
 
 def run_multiple_typing_experiments(
-    sdataset, repetitions=10, save_path="results_typing.json"
+    sdataset, repetitions=10, save_path="results_typing_baseline.json"
 ):
     """
     Run the loso_evaluate experiment multiple times, calculate the average and standard deviation

@@ -349,7 +349,7 @@ def lr_schedule(epoch, lr, total_epochs=100):
         total_epochs // 2
     )  # Start decay at the halfway point of the training
     if epoch >= decay_start_epoch:
-        return lr * 1.0  # No decay for typing data
+        return lr * 0.95  # decay
     return lr
 
 
@@ -379,7 +379,7 @@ def train(train_dataset, val_dataset, model, num_epochs=100, batch_size=1):
         model.fit(
             train_dataset,
             validation_data=val_dataset,
-            epochs=num_epochs,
+            epochs=DEFAULT_NUM_EPOCHS,
             batch_size=batch_size,
             callbacks=[lr_scheduler, clear_memory],
             verbose=1,
@@ -398,7 +398,7 @@ def train(train_dataset, val_dataset, model, num_epochs=100, batch_size=1):
     model.fit(
         train_dataset,
         validation_data=val_dataset,
-        epochs=num_epochs,
+        epochs=DEFAULT_PRETRAIN_NUM_EPOCHS,
         batch_size=batch_size,
         callbacks=[lr_scheduler, clear_memory],
         verbose=1,
@@ -416,7 +416,7 @@ def train(train_dataset, val_dataset, model, num_epochs=100, batch_size=1):
     model.fit(
         train_dataset,
         validation_data=val_dataset,
-        epochs=50,
+        epochs=DEFAULT_NUM_EPOCHS,
         batch_size=batch_size,
         callbacks=[lr_scheduler, clear_memory],
         verbose=1,
@@ -426,6 +426,7 @@ def train(train_dataset, val_dataset, model, num_epochs=100, batch_size=1):
 
 # Default parameters - can be overridden when importing
 DEFAULT_K2 = 100
+DEFAULT_PRETRAIN_NUM_EPOCHS = 50
 DEFAULT_NUM_EPOCHS = 100
 DEFAULT_BATCH_SIZE = 1
 DEFAULT_M = 64
