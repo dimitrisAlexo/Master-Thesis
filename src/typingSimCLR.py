@@ -127,15 +127,15 @@ labeled_gdataset_test = (
 class TypingAugmentation:
     def __init__(
         self,
-        noise_factor=0.05,
+        noise_factor=0.01,
         dropout_rate=0.1,
-        shift_factor=0.1,
-        n_perm_seg=10,
+        n_perm_seg=5,
+        redistribution_threshold=0.03,
     ):
         self.noise_factor = noise_factor
         self.dropout_rate = dropout_rate
-        self.shift_factor = shift_factor
         self.n_perm_seg = n_perm_seg
+        self.redistribution_threshold = redistribution_threshold
 
     def add_noise(self, data):
         """Add Gaussian noise to typing histograms"""
@@ -248,6 +248,53 @@ class TypingAugmentation:
         # Concatenate the normalized sections back together
         return tf.concat([normalized_hold_time, normalized_flight_time], axis=1)
 
+    def uniform_redistribution(self, data):
+        """
+        Redistribute probability mass uniformly among histogram bins above threshold.
+        This augmentation flattens the distribution while preserving active regions
+        and maintaining the normalization property (sum = 1 for each section).
+        """
+        threshold = self.redistribution_threshold
+
+        # Split the data into hold time (0-100) and flight time (101-501) sections
+        hold_time_data = data[:, :101]  # First 101 features (0-100)
+        flight_time_data = data[:, 101:]  # Remaining 401 features (101-501)
+
+        def redistribute_section(section_data):
+            """Redistribute probability mass within a section"""
+            batch_size = tf.shape(section_data)[0]
+            section_features = tf.shape(section_data)[1]
+
+            # Create mask for bins above threshold
+            above_threshold = section_data > threshold
+
+            # Count number of active bins per sample
+            num_active_bins = tf.reduce_sum(
+                tf.cast(above_threshold, tf.float32), axis=1, keepdims=True
+            )
+
+            # Avoid division by zero - if no bins are above threshold, keep original
+            num_active_bins = tf.maximum(num_active_bins, 1.0)
+
+            # Calculate current sum for normalization
+            current_sum = tf.reduce_sum(section_data, axis=1, keepdims=True)
+            current_sum = tf.maximum(current_sum, 1e-8)
+
+            # Calculate uniform value for active bins
+            uniform_value = current_sum / num_active_bins
+
+            # Create redistributed section: uniform value for active bins, zero for inactive
+            redistributed = tf.where(above_threshold, uniform_value, 0.0)
+
+            return redistributed
+
+        # Apply redistribution to both sections
+        redistributed_hold_time = redistribute_section(hold_time_data)
+        redistributed_flight_time = redistribute_section(flight_time_data)
+
+        # Concatenate the redistributed sections back together
+        return tf.concat([redistributed_hold_time, redistributed_flight_time], axis=1)
+
     def get_contrastive_augmenter(self):
         """Combine several augmentations into a single sequential model."""
         return keras.Sequential(
@@ -255,6 +302,7 @@ class TypingAugmentation:
                 layers.Lambda(self.add_noise),
                 # layers.Lambda(self.dropout_features),
                 layers.Lambda(self.permute_histogram_segments),
+                layers.Lambda(self.uniform_redistribution),
                 layers.Lambda(self.normalize_histogram),
             ]
         )
@@ -264,6 +312,9 @@ class TypingAugmentation:
         return keras.Sequential(
             [
                 layers.Lambda(self.add_noise),
+                # layers.Lambda(self.dropout_features),
+                # layers.Lambda(self.permute_histogram_segments),
+                layers.Lambda(self.uniform_redistribution),
                 layers.Lambda(self.normalize_histogram),
             ]
         )
@@ -605,7 +656,7 @@ class ContrastiveModel(keras.Model):
 pretraining_model = ContrastiveModel()
 pretraining_model.compile(
     contrastive_optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
-    probe_optimizer=keras.optimizers.Adam(learning_rate=1e-4),
+    probe_optimizer=keras.optimizers.Adam(learning_rate=5e-4),
 )
 
 checkpoint = callbacks.ModelCheckpoint(
@@ -693,7 +744,7 @@ def get_labeled_embeddings(pretraining_model, labeled_gdataset):
 
 # Function to visualize the embeddings
 def visualize_embeddings(
-    embeddings, labels, n_components=2, perplexity=5, learning_rate="auto", n_iter=500
+    embeddings, labels, n_components=2, perplexity=10, learning_rate="auto", n_iter=250
 ):
     """
     Visualize the embeddings using t-SNE, colored by their class labels.
@@ -711,56 +762,27 @@ def visualize_embeddings(
     reduced_embeddings = tsne.fit_transform(embeddings)
 
     # 2D Visualization
-    if n_components == 2:
-        plt.figure(figsize=(10, 8))
-        plt.scatter(
-            reduced_embeddings[labels == 0, 0],
-            reduced_embeddings[labels == 0, 1],
-            label="No FMI",
-            c="b",
-            alpha=0.5,
-        )
-        plt.scatter(
-            reduced_embeddings[labels == 1, 0],
-            reduced_embeddings[labels == 1, 1],
-            label="FMI",
-            c="r",
-            alpha=0.5,
-        )
-        plt.title("2D t-SNE Visualization of Typing Embeddings")
-        plt.xlabel("t-SNE Dimension 1")
-        plt.ylabel("t-SNE Dimension 2")
-        plt.legend()
-        plt.show()
+    plt.figure(figsize=(10, 8))
+    plt.scatter(
+        reduced_embeddings[labels == 0, 0],
+        reduced_embeddings[labels == 0, 1],
+        label="No FMI",
+        c="b",
+        alpha=0.5,
+    )
+    plt.scatter(
+        reduced_embeddings[labels == 1, 0],
+        reduced_embeddings[labels == 1, 1],
+        label="FMI",
+        c="r",
+        alpha=0.5,
+    )
+    plt.title("2D t-SNE Visualization of Typing Embeddings")
+    plt.xlabel("t-SNE Dimension 1")
+    plt.ylabel("t-SNE Dimension 2")
+    plt.legend()
+    plt.show()
 
-    # 3D Visualization
-    elif n_components == 3:
-        fig = plt.figure(figsize=(10, 8))
-        ax = fig.add_subplot(111, projection="3d")
-        ax.scatter(
-            reduced_embeddings[labels == 0, 0],
-            reduced_embeddings[labels == 0, 1],
-            reduced_embeddings[labels == 0, 2],
-            label="No FMI",
-            c="b",
-            alpha=0.5,
-        )
-        ax.scatter(
-            reduced_embeddings[labels == 1, 0],
-            reduced_embeddings[labels == 1, 1],
-            reduced_embeddings[labels == 1, 2],
-            label="FMI",
-            c="r",
-            alpha=0.5,
-        )
-        ax.set_title("3D t-SNE Visualization of Typing Embeddings")
-        ax.set_xlabel("t-SNE Dimension 1")
-        ax.set_ylabel("t-SNE Dimension 2")
-        ax.set_zlabel("t-SNE Dimension 3")
-        ax.legend()
-        plt.show()
-    else:
-        raise ValueError("n_components must be 2 or 3 for visualization.")
 
 
 # Prepare labeled dataset for embedding visualization
