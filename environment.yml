@@ -1,6 +1,8 @@
 name: thesis_env
 channels:
   - defaults
+  - https://repo.anaconda.com/pkgs/main
+  - https://repo.anaconda.com/pkgs/r
 dependencies:
   - _libgcc_mutex=0.1=main
   - _openmp_mutex=5.1=1_gnu
@@ -191,4 +193,4 @@ dependencies:
       - widgetsnbextension==4.0.13
       - wrapt==1.17.0
       - zipp==3.21.0
-prefix: /home/dimitris/anaconda3/envs/thesis_env
+prefix: /home/dalexopoulos/miniconda3/envs/thesis_env

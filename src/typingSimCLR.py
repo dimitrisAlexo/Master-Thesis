@@ -54,12 +54,12 @@ print("Using mixed precision...")
 """
 
 unlabeled_dataset_size = 5120
-labeled_dataset_size = 450  # Will be adjusted based on actual labeled data
+labeled_dataset_size = 200  # Will be adjusted based on actual labeled data
 
 M = 64
 K2 = 100
 batch_size = 512
-labeled_batch_size = 45  # Batch size for labeled data
+labeled_batch_size = 20  # Batch size for labeled data
 num_epochs = 200
 temperature = 0.01
 learning_rate = 0.001
@@ -128,8 +128,8 @@ class TypingAugmentation:
     def __init__(
         self,
         noise_factor=0.01,
-        dropout_rate=0.1,
-        n_perm_seg=5,
+        dropout_rate=0.01,
+        n_perm_seg=8,
         redistribution_threshold=0.03,
     ):
         self.noise_factor = noise_factor
@@ -300,9 +300,9 @@ class TypingAugmentation:
         return keras.Sequential(
             [
                 layers.Lambda(self.add_noise),
-                # layers.Lambda(self.dropout_features),
+                layers.Lambda(self.dropout_features),
                 layers.Lambda(self.permute_histogram_segments),
-                layers.Lambda(self.uniform_redistribution),
+                # layers.Lambda(self.uniform_redistribution),
                 layers.Lambda(self.normalize_histogram),
             ]
         )
@@ -312,9 +312,9 @@ class TypingAugmentation:
         return keras.Sequential(
             [
                 layers.Lambda(self.add_noise),
-                # layers.Lambda(self.dropout_features),
-                # layers.Lambda(self.permute_histogram_segments),
-                layers.Lambda(self.uniform_redistribution),
+                layers.Lambda(self.dropout_features),
+                layers.Lambda(self.permute_histogram_segments),
+                # layers.Lambda(self.uniform_redistribution),
                 layers.Lambda(self.normalize_histogram),
             ]
         )
@@ -688,6 +688,7 @@ pretraining_history = pretraining_model.fit(
     validation_data=labeled_gdataset_test,
     batch_size=batch_size,
     callbacks=[checkpoint, lr_scheduler],
+    verbose=1,
 )
 
 # Load best weights
@@ -708,8 +709,9 @@ print(
 
 # Save the encoder weights for use in the MIL model
 pretraining_model.get_layer("embeddings_function").save_weights(
-    "typing_embeddings.weights.h5"
+    "typing_simclr_embeddings.weights.h5"
 )
+print("Encoder weights saved to typing_simclr_embeddings.weights.h5")
 
 # Plot results
 pretraining_model.plot_contrastive_loss(pretraining_history)

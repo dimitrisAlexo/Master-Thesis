@@ -62,7 +62,7 @@ def setup_environment():
 
 # === MODE SELECTION ===
 # Default MODE - can be overridden when importing
-MODE = "baseline"  # "baseline", "simclr", "federated"
+MODE = "simclr"  # "baseline", "simclr", "federated"
 
 
 class MILAttentionLayer(layers.Layer):
@@ -167,7 +167,7 @@ class MILAttentionLayer(layers.Layer):
 
 
 class MILModel(keras.Model):
-    def __init__(self, input_shape, M, weight_params_dim=16, use_gated=False, **kwargs):
+    def __init__(self, input_shape, M, weight_params_dim=16, use_gated=False, mode=None, **kwargs):
         super(MILModel, self).__init__(**kwargs)
 
         # Store parameters
@@ -175,9 +175,10 @@ class MILModel(keras.Model):
         self.K2, self.B = input_shape
         self.weight_params_dim = weight_params_dim
         self.use_gated = use_gated
+        self.mode = mode if mode is not None else MODE  # Use parameter or fall back to global
 
         # Mode-specific batchnorm
-        self.embeddings_learning_rate = 5e-4 if MODE != "baseline" else 1e-3
+        self.embeddings_learning_rate = 5e-4 if self.mode != "baseline" else 1e-3
         self.optimizer_embeddings = keras.optimizers.Adam(
             learning_rate=self.embeddings_learning_rate
         )
@@ -201,7 +202,7 @@ class MILModel(keras.Model):
         self.classifier = self.final_classifier()
 
         # Finetune only for simclr/federated
-        if MODE in ["simclr", "federated"]:
+        if self.mode in ["simclr", "federated"]:
             self.finetune()
         else:
             print("Finetune skipped for baseline mode.")
@@ -275,9 +276,9 @@ class MILModel(keras.Model):
 
     def finetune(self):
         """Load pre-trained weights for the embeddings function."""
-        if MODE == "simclr":
-            weights_file = "typing_embeddings.weights.h5"
-        elif MODE == "federated":
+        if self.mode == "simclr":
+            weights_file = "typing_simclr_embeddings.weights.h5"
+        elif self.mode == "federated":
             weights_file = "federated.weights.h5"
         else:
             return  # No finetune for baseline
@@ -353,10 +354,13 @@ def lr_schedule(epoch, lr, total_epochs=100):
     return lr
 
 
-def train(train_dataset, val_dataset, model, num_epochs=100, batch_size=1):
+def train(train_dataset, val_dataset, model, num_epochs=100, batch_size=1, mode=None):
     # Train model.
     # Prepare callbacks.
     # Path where to save best weights.
+
+    # Use model's mode if available, otherwise fall back to global MODE
+    current_mode = mode if mode is not None else (getattr(model, 'mode', MODE))
 
     # Callbacks
     clear_memory = ClearMemory()
@@ -365,7 +369,7 @@ def train(train_dataset, val_dataset, model, num_epochs=100, batch_size=1):
     )
 
     # Mode-specific training logic
-    if MODE == "baseline":
+    if current_mode == "baseline":
         # No encoder freezing, no fine-tuning, single phase
         model.compile(
             optimizer=optimizers.Adam(learning_rate=1e-3),

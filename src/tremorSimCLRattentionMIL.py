@@ -167,7 +167,7 @@ class MILAttentionLayer(layers.Layer):
 
 
 class MILModel(keras.Model):
-    def __init__(self, input_shape, M, weight_params_dim=16, use_gated=False, **kwargs):
+    def __init__(self, input_shape, M, weight_params_dim=16, use_gated=False, mode=None, **kwargs):
         super(MILModel, self).__init__(**kwargs)
 
         # Store parameters
@@ -175,10 +175,11 @@ class MILModel(keras.Model):
         self.Kt, self.Ws, self.C = input_shape
         self.weight_params_dim = weight_params_dim
         self.use_gated = use_gated
+        self.mode = mode if mode is not None else MODE  # Use parameter or fall back to global
 
         # Mode-specific batchnorm
-        use_batchnorm = not (MODE == "federated")
-        self.embeddings_learning_rate = 5e-4 if MODE != "baseline" else 1e-3
+        use_batchnorm = not (self.mode == "federated")
+        self.embeddings_learning_rate = 5e-4 if self.mode != "baseline" else 1e-3
         self.optimizer_embeddings = keras.optimizers.Adam(
             learning_rate=self.embeddings_learning_rate
         )
@@ -207,7 +208,7 @@ class MILModel(keras.Model):
         self.classifier = self.final_classifier()
 
         # Finetune only for simclr/federated
-        if MODE in ["simclr", "federated"]:
+        if self.mode in ["simclr", "federated"]:
             self.finetune()
         else:
             print("Finetune skipped for baseline mode.")
@@ -314,9 +315,9 @@ class MILModel(keras.Model):
 
     def finetune(self):
         """Load pre-trained weights for the embeddings function."""
-        if MODE == "simclr":
-            weights_file = "embeddings.weights.h5"
-        elif MODE == "federated":
+        if self.mode == "simclr":
+            weights_file = "tremor_simclr_embeddings.weights.h5"
+        elif self.mode == "federated":
             weights_file = "federated.weights.h5"
         else:
             return  # No finetune for baseline
@@ -392,10 +393,13 @@ def lr_schedule(epoch, lr, total_epochs=50):
     return lr
 
 
-def train(train_dataset, val_dataset, model, num_epochs=50, batch_size=1):
+def train(train_dataset, val_dataset, model, num_epochs=50, batch_size=1, mode=None):
     # Train model.
     # Prepare callbacks.
     # Path where to save best weights.
+
+    # Use model's mode if available, otherwise fall back to global MODE
+    current_mode = mode if mode is not None else (getattr(model, 'mode', MODE))
 
     # Callbacks
     clear_memory = ClearMemory()
@@ -404,7 +408,7 @@ def train(train_dataset, val_dataset, model, num_epochs=50, batch_size=1):
     )
 
     # Mode-specific training logic
-    if MODE == "baseline":
+    if current_mode == "baseline":
         # No encoder freezing, no fine-tuning, single phase
         model.compile(
             optimizer=optimizers.Adam(learning_rate=1e-3),
@@ -498,7 +502,17 @@ def loso_evaluate(data, input_shape=None, M=64, batch_size=1):
 
     tn, fp, fn, tp = 0, 0, 0, 0
 
+    all_true_labels = []
+    all_predicted_labels = []
+    all_predicted_probs = []
+
+    fold_counter = 0
+    total_folds = len(bags)  # Total number of subjects for LOSO
+
     for train_index, test_index in loo.split(bags):
+        fold_counter += 1
+        print(f"\033[94mFold {fold_counter}/{total_folds}\033[0m")
+
         # Split the data into training and validation sets
         train_bags = [bags[i] for i in train_index]
         train_labels = [y_train[i] for i in train_index]
@@ -534,11 +548,24 @@ def loso_evaluate(data, input_shape=None, M=64, batch_size=1):
         # Evaluate the model on the validation data
         class_predictions = predict(val_dataset, trained_model)
 
-        del trained_model
-
         # Compute confusion matrix
         predicted_label = np.argmax(class_predictions, axis=1).flatten()
         true_label = val_labels.flatten()
+
+        # Clean up model and datasets
+        del trained_model
+        del train_dataset, val_dataset
+        del train_data, val_data, train_labels, val_labels
+
+        k.clear_session()
+        gc.collect()
+        print_memory_usage()
+
+        # Store true and predicted labels for plotting later
+        all_true_labels.extend(true_label)
+        all_predicted_labels.extend(predicted_label)
+        predicted_probs = class_predictions[:, 1].flatten()
+        all_predicted_probs.extend(predicted_probs)
 
         print("predicted_labels:", predicted_label)
         print("true_labels:", true_label)
@@ -565,7 +592,24 @@ def loso_evaluate(data, input_shape=None, M=64, batch_size=1):
     print(f"Final precision across all subjects: {precision * 100:.2f}%")
     print(f"Final F1-score across all subjects: {f1_score * 100:.2f}%")
 
-    return
+    # Convert lists to arrays for plotting
+    all_true_labels = np.array(all_true_labels)
+    all_predicted_probs = np.array(all_predicted_probs)
+    all_predicted_labels = np.array(all_predicted_labels)
+    valid_indices = ~np.isnan(all_true_labels) & ~np.isnan(all_predicted_probs)
+    all_true_labels = all_true_labels[valid_indices]
+    all_predicted_probs = all_predicted_probs[valid_indices]
+    all_predicted_labels = all_predicted_labels[valid_indices]
+
+    results = {
+        "final_accuracy": accuracy,
+        "final_sensitivity": sensitivity,
+        "final_specificity": specificity,
+        "final_precision": precision,
+        "final_f1_score": f1_score,
+    }
+
+    return all_true_labels, all_predicted_probs, all_predicted_labels, results
 
 
 def rkf_evaluate(data, k, n_repeats, input_shape=None, M=64, batch_size=1):

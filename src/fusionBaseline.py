@@ -69,6 +69,8 @@ print("Using mixed precision...")
 # === FUSION MODEL PARAMETERS ===
 MODE = "baseline"
 assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
+print(f"Using MODE: {MODE}")
+print(f"SimCLR weight loading: {'ENABLED' if MODE in ['simclr', 'federated'] else 'DISABLED'}")
 
 # Tremor parameters
 TREMOR_E_THRES = 0.15 * 2
@@ -133,7 +135,7 @@ def pretrain_tremor_branch(subject_exclude_id=None):
     print(f"Tremor input shape: {tremor_input_shape}")
 
     # Create tremor model
-    tremor_model = TremorMILModel(input_shape=tremor_input_shape, M=TREMOR_M)
+    tremor_model = TremorMILModel(input_shape=tremor_input_shape, M=TREMOR_M, mode=MODE)
 
     # Prepare all data for training (using all subjects for pretraining)
     all_bags = tremor_dataset["X"].tolist()
@@ -168,6 +170,7 @@ def pretrain_tremor_branch(subject_exclude_id=None):
         tremor_model,
         num_epochs=num_epochs,
         batch_size=batch_size,
+        mode=MODE,
     )
 
     # Save tremor branch weights
@@ -212,7 +215,7 @@ def pretrain_typing_branch(subject_exclude_id=None):
     print(f"Typing input shape: {typing_input_shape}")
 
     # Create typing model
-    typing_model = TypingMILModel(input_shape=typing_input_shape, M=TYPING_M)
+    typing_model = TypingMILModel(input_shape=typing_input_shape, M=TYPING_M, mode=MODE)
 
     # Prepare all data for training (using all subjects for pretraining)
     all_bags = typing_dataset["X"].tolist()
@@ -246,6 +249,7 @@ def pretrain_typing_branch(subject_exclude_id=None):
         typing_model,
         num_epochs=num_epochs,
         batch_size=batch_size,
+        mode=MODE,
     )
 
     # Save typing branch weights
@@ -359,7 +363,7 @@ class FusionModel(keras.Model):
     Use get_bag_embeddings() if fused embedding is required externally.
     """
 
-    def __init__(self, tremor_input_shape, typing_input_shape, M=64, **kwargs):
+    def __init__(self, tremor_input_shape, typing_input_shape, M=64, mode="baseline", **kwargs):
         super(FusionModel, self).__init__(**kwargs)
 
         self.M = M
@@ -367,8 +371,8 @@ class FusionModel(keras.Model):
         self.typing_input_shape = typing_input_shape
 
         # Create tremor and typing branches
-        self.tremor_branch = TremorMILModel(input_shape=tremor_input_shape, M=M)
-        self.typing_branch = TypingMILModel(input_shape=typing_input_shape, M=M)
+        self.tremor_branch = TremorMILModel(input_shape=tremor_input_shape, M=M, mode=mode)
+        self.typing_branch = TypingMILModel(input_shape=typing_input_shape, M=M, mode=mode)
 
         # Multi-label classifier (define BEFORE loading weights/freeze so attribute exists)
         self.multilabel_classifier = keras.Sequential(
@@ -605,6 +609,7 @@ def fusion_loso_evaluate(endtask_df):
             tremor_input_shape=tremor_input_shape,
             typing_input_shape=typing_input_shape,
             M=TREMOR_M,  # Assuming same M for both branches
+            mode=MODE,
         )
 
         # Compile model for multi-label classification
@@ -639,10 +644,6 @@ def fusion_loso_evaluate(endtask_df):
         gc.collect()
         k.clear_session()
 
-        # Early stop (debug) if environment variable set
-        if os.getenv("FUSION_DEBUG") == "1":
-            print("FUSION_DEBUG active: stopping after first fold.")
-            break
 
     # Calculate overall metrics
     all_predictions = np.array(all_predictions)
@@ -698,7 +699,7 @@ def fusion_loso_evaluate(endtask_df):
 
 
 def run_multiple_fusion_experiments(
-    endtask_df, repetitions=10, save_path="results_fusion.json"
+    endtask_df, repetitions=10, save_path="results_fusion_baseline.json"
 ):
     """
     Run the fusion LOSO experiment multiple times, calculate the average and standard deviation
@@ -817,8 +818,8 @@ def run_fusion_experiment(repetitions=1):
     # Create endtask dataset
     endtask_df = create_endtask_dataset()
 
-    print("Endtask dataset: ")
-    print(endtask_df)
+    # print("Endtask dataset: ")
+    # print(endtask_df)
 
     if repetitions == 1:
         # Single run
@@ -835,7 +836,7 @@ def run_fusion_experiment(repetitions=1):
 if __name__ == "__main__":
     # Choose what to run
     run_fusion_phase = True  # Set to True to run fusion experiment
-    fusion_repetitions = 1  # Number of LOSO repetitions to run
+    fusion_repetitions = 10  # Number of LOSO repetitions to run
 
     if run_fusion_phase:
         print("Running fusion phase...")

@@ -282,7 +282,7 @@ def form_fusion_dataset(
         tremor_bag, tremor_label = tremor_processed[subject_id]
         typing_bag, fmi_label = typing_processed[subject_id]
 
-        # PD is positive if BOTH Tremor and FMI are positive
+        # PD is positive if Tremor or FMI are positive
         pd_label = 1 if (tremor_label == 1 or fmi_label == 1) else 0
 
         # Create multi-label array [Tremor, FMI, PD]

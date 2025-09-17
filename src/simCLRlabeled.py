@@ -591,7 +591,10 @@ print(
 # for pos_sim, neg_sim in pretraining_model.similarity_values:
 #     print("Positive similarity: {:.2f}, Negative similarity: {:.2f}".format(pos_sim, neg_sim))
 
-pretraining_model.get_layer("embeddings_function").save_weights("embeddings.weights.h5")
+pretraining_model.get_layer("embeddings_function").save_weights(
+    "tremor_simclr_embeddings.weights.h5"
+)
+print("Encoder weights saved to tremor_simclr_embeddings.weights.h5")
 
 # pretraining_model.get_layer("embeddings_function").load_weights("embeddings.weights.h5")
 
