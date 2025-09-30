@@ -115,7 +115,7 @@ def run_multiple_tremor_experiments(
 
 
 def run_multiple_tremor_loso_experiments(
-    sdataset, repetitions=10, save_path="../results/results_tremor_baseline.json"
+    sdataset, repetitions=10, save_path="../results/500_results_tremor_baseline.json"
 ):
     """
     Run the tremor loso_evaluate experiment multiple times, calculate the average and standard deviation
@@ -314,6 +314,7 @@ def load_typing_dataset():
         with open("typing_sdataset.pickle", "rb") as f:
             print("Loading typing sdataset...")
             sdataset = pkl.load(f)
+        print(f"windows shape: {sdataset['X'][0].shape}")
         return sdataset
     except FileNotFoundError:
         print(
@@ -328,6 +329,7 @@ def load_tremor_dataset():
         with open("sdataset.pickle", "rb") as f:
             print("Loading tremor sdataset...")
             sdataset = pkl.load(f)
+            print(f"windows shape: {sdataset['X'][0].shape}")
         return sdataset
     except FileNotFoundError:
         print("sdataset.pickle not found. Please run the dataset creation first.")
@@ -341,7 +343,7 @@ if __name__ == "__main__":
     print("RESULTS")
 
     # Load datasets
-    typing_sdataset = load_typing_dataset()
+    # typing_sdataset = load_typing_dataset()
     tremor_sdataset = load_tremor_dataset()
 
     # Run typing experiments if dataset is available

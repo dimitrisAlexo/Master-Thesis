@@ -62,7 +62,7 @@ def setup_environment():
 
 # === MODE SELECTION ===
 # Default MODE - can be overridden when importing
-MODE = "simclr"
+MODE = "baseline"  # Options: "baseline", "simclr", "federated"
 
 
 class MILAttentionLayer(layers.Layer):
@@ -910,7 +910,7 @@ if __name__ == "__main__":
 
     # Parameters
     E_thres = 0.15 * 2
-    Kt = 100
+    Kt = 500
     num_epochs = 50
     batch_size = 1
     M = 64
