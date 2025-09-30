@@ -54,12 +54,12 @@ print("Using mixed precision...")
 """
 
 unlabeled_dataset_size = 5120
-labeled_dataset_size = 200  # Will be adjusted based on actual labeled data
+labeled_dataset_size = 100  # Will be adjusted based on actual labeled data
 
 M = 64
 K2 = 100
 batch_size = 512
-labeled_batch_size = 20  # Batch size for labeled data
+labeled_batch_size = 8  # Batch size for labeled data
 num_epochs = 200
 temperature = 0.01
 learning_rate = 0.001
@@ -115,7 +115,7 @@ labeled_gdataset_test = tf.data.Dataset.from_tensor_slices(
 )
 labeled_gdataset_test = (
     labeled_gdataset_test.shuffle(buffer_size=len(labeled_gdataset_test))
-    .batch(1)
+    .batch(10)
     .prefetch(buffer_size=tf.data.AUTOTUNE)
 )
 
@@ -355,43 +355,6 @@ def visualize_typing_augmentations(gdataset, augmentation, num_histograms=3):
 
 augmentation = TypingAugmentation()
 visualize_typing_augmentations(gdataset, augmentation, num_histograms=3)
-
-
-def augment_and_extend_dataset(df, get_contrastive_augmenter, num_extensions=1):
-    """
-    Augments the dataset and extends it by a specified number of times.
-    """
-    # Extract histograms and labels
-    X_original = tf.convert_to_tensor(df["X"].to_list(), dtype=tf.float32)
-    y_original = tf.convert_to_tensor(df["y"].to_list(), dtype=tf.int32)
-
-    # Get augmenter
-    augmenter = get_contrastive_augmenter()
-
-    # Initialize lists to store extended data
-    X_combined = list(df["X"])  # Start with the original data
-    y_combined = list(df["y"])  # Start with the original labels
-
-    # Perform augmentation num_extensions times
-    for _ in range(num_extensions):
-        X_augmented = augmenter(X_original)
-        X_combined.extend(X_augmented.numpy().tolist())  # Add augmented data
-        y_combined.extend(y_original.numpy().tolist())  # Add corresponding labels
-
-    # Create a new DataFrame
-    extended_df = pd.DataFrame({"X": X_combined, "y": y_combined})
-
-    return extended_df
-
-
-# Extend labeled training dataset through augmentation
-num_extensions = max(1, labeled_dataset_size // len(labeled_gdataset_train) - 1)
-labeled_gdataset_train = augment_and_extend_dataset(
-    labeled_gdataset_train,
-    augmentation.get_contrastive_augmenter,
-    num_extensions=num_extensions,
-)
-print(f"Extended labeled training dataset shape: {labeled_gdataset_train.shape}")
 
 # Convert to TensorFlow dataset
 labeled_gdataset_train = tf.data.Dataset.from_tensor_slices(

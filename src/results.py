@@ -18,7 +18,7 @@ import pickle as pkl
 
 
 def run_multiple_tremor_experiments(
-    sdataset, k=5, n_repeats=5, repetitions=10, save_path="results_tremor.json"
+    sdataset, k=5, n_repeats=5, repetitions=10, save_path="../results/results_tremor.json"
 ):
     """
     Run the rkf_evaluate experiment multiple times, calculate the average and standard deviation
@@ -115,7 +115,7 @@ def run_multiple_tremor_experiments(
 
 
 def run_multiple_tremor_loso_experiments(
-    sdataset, repetitions=10, save_path="results_tremor_baseline.json"
+    sdataset, repetitions=10, save_path="../results/results_tremor_baseline.json"
 ):
     """
     Run the tremor loso_evaluate experiment multiple times, calculate the average and standard deviation
@@ -212,7 +212,7 @@ def run_multiple_tremor_loso_experiments(
 
 
 def run_multiple_typing_experiments(
-    sdataset, repetitions=10, save_path="results_typing_pretrained.json"
+    sdataset, repetitions=10, save_path="../results/results_typing_pretrained.json"
 ):
     """
     Run the loso_evaluate experiment multiple times, calculate the average and standard deviation

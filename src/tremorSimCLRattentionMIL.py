@@ -62,7 +62,7 @@ def setup_environment():
 
 # === MODE SELECTION ===
 # Default MODE - can be overridden when importing
-MODE = "baseline"
+MODE = "simclr"
 
 
 class MILAttentionLayer(layers.Layer):

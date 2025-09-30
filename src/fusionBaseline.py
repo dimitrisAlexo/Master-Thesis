@@ -67,7 +67,7 @@ print("Using mixed precision...")
 
 
 # === FUSION MODEL PARAMETERS ===
-MODE = "baseline"
+MODE = "simclr"
 assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
 print(f"Using MODE: {MODE}")
 print(f"SimCLR weight loading: {'ENABLED' if MODE in ['simclr', 'federated'] else 'DISABLED'}")
@@ -412,7 +412,6 @@ class FusionModel(keras.Model):
     def load_pretrained_weights(self):
         """Load pretrained weights for both branches"""
         try:
-            print("Loading pretrained tremor weights...")
             # Ensure tremor embeddings network is built
             if not self.tremor_branch.embeddings_network.built:
                 self.tremor_branch.embeddings_network.build(
@@ -421,8 +420,8 @@ class FusionModel(keras.Model):
             self.tremor_branch.embeddings_network.load_weights(
                 "tremor_embeddings.weights.h5"
             )
+            print(f"Loaded tremor embeddings weights from tremor_embeddings.weights.h5")
 
-            print("Loading pretrained typing weights...")
             # Ensure typing embeddings network is built
             if not self.typing_branch.embeddings_network.built:
                 # Typing embeddings sequential already has an Input layer but guard anyway
@@ -432,6 +431,7 @@ class FusionModel(keras.Model):
             self.typing_branch.embeddings_network.load_weights(
                 "typing_embeddings.weights.h5"
             )
+            print(f"Loaded typing embeddings weights from typing_embeddings.weights.h5")
 
             # Load attention weights if needed
             # Build attention layers before setting weights
@@ -442,6 +442,7 @@ class FusionModel(keras.Model):
             with open("tremor_attention.weights.pkl", "rb") as f:
                 tremor_attention_weights = pkl.load(f)
                 self.tremor_branch.attention_layer.set_weights(tremor_attention_weights)
+            print("Loaded tremor attention weights from tremor_attention.weights.pkl")
 
             if not self.typing_branch.attention_layer.built:
                 self.typing_branch.attention_layer.build(
@@ -450,6 +451,7 @@ class FusionModel(keras.Model):
             with open("typing_attention.weights.pkl", "rb") as f:
                 typing_attention_weights = pkl.load(f)
                 self.typing_branch.attention_layer.set_weights(typing_attention_weights)
+            print("Loaded typing attention weights from typing_attention.weights.pkl")
 
             print("Pretrained weights loaded successfully!")
 
@@ -699,7 +701,7 @@ def fusion_loso_evaluate(endtask_df):
 
 
 def run_multiple_fusion_experiments(
-    endtask_df, repetitions=10, save_path="results_fusion_baseline.json"
+    endtask_df, repetitions=10, save_path="../results/results_fusion_pretrained.json"
 ):
     """
     Run the fusion LOSO experiment multiple times, calculate the average and standard deviation

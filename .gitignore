@@ -4,5 +4,4 @@ __pycache__/
 *.pyc
 *.h5
 *.pickle
-*.json
 *.pkl

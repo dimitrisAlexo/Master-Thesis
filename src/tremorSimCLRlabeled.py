@@ -74,8 +74,8 @@ learning_rate = 0.001
 """
 
 # # Adjust the paths to be relative to the current script location
-# gdata_path = os.path.join("..", "data", "tremor_gdata.pickle")
-# sdata_path = os.path.join("..", "data", "tremor_sdata.pickle")
+# gdata_path = os.path.join("..", "data", "imu_gdata.pickle")
+# sdata_path = os.path.join("..", "data", "imu_sdata.pickle")
 # tremor_gdata = unpickle_data(gdata_path)
 # tremor_sdata = unpickle_data(sdata_path)
 # gdataset = form_unlabeled_tremor_dataset(tremor_gdata, tremor_sdata, E_thres, Kt)
