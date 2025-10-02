@@ -64,6 +64,13 @@ def setup_environment():
 # Default MODE - can be overridden when importing
 MODE = "baseline"  # Options: "baseline", "simclr", "federated"
 
+# Default parameters - can be overridden when importing
+DEFAULT_E_THRES = 0.15 * 2
+DEFAULT_KT = 100
+DEFAULT_NUM_EPOCHS = 100
+DEFAULT_BATCH_SIZE = 8
+DEFAULT_M = 64
+
 
 class MILAttentionLayer(layers.Layer):
     """Implementation of the attention-based Deep MIL layer.
@@ -393,7 +400,7 @@ def lr_schedule(epoch, lr, total_epochs=50):
     return lr
 
 
-def train(train_dataset, val_dataset, model, num_epochs=50, batch_size=1, mode=None):
+def train(train_dataset, val_dataset, model, num_epochs=DEFAULT_NUM_EPOCHS, batch_size=DEFAULT_BATCH_SIZE, mode=None):
     # Train model.
     # Prepare callbacks.
     # Path where to save best weights.
@@ -467,14 +474,6 @@ def train(train_dataset, val_dataset, model, num_epochs=50, batch_size=1, mode=N
     return model
 
 
-# Default parameters - can be overridden when importing
-DEFAULT_E_THRES = 0.15 * 2
-DEFAULT_KT = 100
-DEFAULT_NUM_EPOCHS = 50
-DEFAULT_BATCH_SIZE = 1
-DEFAULT_M = 64
-
-
 def predict(dataset, trained_model):
     # Predict output classes on data.
     predictions = trained_model.predict(dataset)
@@ -486,7 +485,7 @@ def predict(dataset, trained_model):
     return predictions
 
 
-def loso_evaluate(data, input_shape=None, M=64, batch_size=1):
+def loso_evaluate(data, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_SIZE):
     # Extract the bags and labels
     bags = data["X"].tolist()
     y_train = data["y_train"].tolist()
@@ -612,7 +611,7 @@ def loso_evaluate(data, input_shape=None, M=64, batch_size=1):
     return all_true_labels, all_predicted_probs, all_predicted_labels, results
 
 
-def rkf_evaluate(data, k, n_repeats, input_shape=None, M=64, batch_size=1):
+def rkf_evaluate(data, k, n_repeats, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_SIZE):
     # Extract the bags and labels
     bags = data["X"].tolist()
     y_train = data["y_train"].tolist()
@@ -750,7 +749,7 @@ def rkf_evaluate(data, k, n_repeats, input_shape=None, M=64, batch_size=1):
 
 
 def rkf_evaluate_with_validation(
-    data, k, n_repeats, input_shape=None, M=64, batch_size=1
+    data, k, n_repeats, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_SIZE
 ):
     # Extract the bags and labels
     bags = data["X"].tolist()
@@ -909,11 +908,11 @@ if __name__ == "__main__":
     assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
 
     # Parameters
-    E_thres = 0.15 * 2
-    Kt = 500
-    num_epochs = 50
-    batch_size = 1
-    M = 64
+    E_thres = DEFAULT_E_THRES
+    Kt = DEFAULT_KT
+    num_epochs = DEFAULT_NUM_EPOCHS
+    batch_size = DEFAULT_BATCH_SIZE
+    M = DEFAULT_M
 
     # Load dataset
     # Adjust the paths to be relative to the current script location
