@@ -62,12 +62,12 @@ def setup_environment():
 
 # === MODE SELECTION ===
 # Default MODE - can be overridden when importing
-MODE = "baseline"  # Options: "baseline", "simclr", "federated"
+MODE = "simclr"  # Options: "baseline", "simclr", "federated"
 
 # Default parameters - can be overridden when importing
 DEFAULT_E_THRES = 0.15 * 2
-DEFAULT_KT = 100
-DEFAULT_NUM_EPOCHS = 100
+DEFAULT_KT = 200
+DEFAULT_NUM_EPOCHS = 50
 DEFAULT_BATCH_SIZE = 8
 DEFAULT_M = 64
 
@@ -174,7 +174,9 @@ class MILAttentionLayer(layers.Layer):
 
 
 class MILModel(keras.Model):
-    def __init__(self, input_shape, M, weight_params_dim=16, use_gated=False, mode=None, **kwargs):
+    def __init__(
+        self, input_shape, M, weight_params_dim=16, use_gated=False, mode=None, **kwargs
+    ):
         super(MILModel, self).__init__(**kwargs)
 
         # Store parameters
@@ -182,7 +184,9 @@ class MILModel(keras.Model):
         self.Kt, self.Ws, self.C = input_shape
         self.weight_params_dim = weight_params_dim
         self.use_gated = use_gated
-        self.mode = mode if mode is not None else MODE  # Use parameter or fall back to global
+        self.mode = (
+            mode if mode is not None else MODE
+        )  # Use parameter or fall back to global
 
         # Mode-specific batchnorm
         use_batchnorm = not (self.mode == "federated")
@@ -400,13 +404,20 @@ def lr_schedule(epoch, lr, total_epochs=50):
     return lr
 
 
-def train(train_dataset, val_dataset, model, num_epochs=DEFAULT_NUM_EPOCHS, batch_size=DEFAULT_BATCH_SIZE, mode=None):
+def train(
+    train_dataset,
+    val_dataset,
+    model,
+    num_epochs=DEFAULT_NUM_EPOCHS,
+    batch_size=DEFAULT_BATCH_SIZE,
+    mode=None,
+):
     # Train model.
     # Prepare callbacks.
     # Path where to save best weights.
 
     # Use model's mode if available, otherwise fall back to global MODE
-    current_mode = mode if mode is not None else (getattr(model, 'mode', MODE))
+    current_mode = mode if mode is not None else (getattr(model, "mode", MODE))
 
     # Callbacks
     clear_memory = ClearMemory()
@@ -611,7 +622,9 @@ def loso_evaluate(data, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_
     return all_true_labels, all_predicted_probs, all_predicted_labels, results
 
 
-def rkf_evaluate(data, k, n_repeats, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_SIZE):
+def rkf_evaluate(
+    data, k, n_repeats, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_SIZE
+):
     # Extract the bags and labels
     bags = data["X"].tolist()
     y_train = data["y_train"].tolist()

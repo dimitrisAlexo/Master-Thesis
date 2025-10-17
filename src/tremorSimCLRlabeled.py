@@ -57,14 +57,14 @@ print("Using mixed precision...")
 ## Hyperparameter setup
 """
 
-unlabeled_dataset_size = 5120
+unlabeled_dataset_size = 10240
 labeled_dataset_size = 450
 
 M = 64
 E_thres = 0.15 * 3
-Kt = 100
+Kt = 200
 batch_size = 512
-labeled_gdataset_batch_size = 45
+labeled_gdataset_batch_size = 22
 num_epochs = 200
 temperature = 0.01
 learning_rate = 0.001

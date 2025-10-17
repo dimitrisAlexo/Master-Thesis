@@ -44,8 +44,15 @@ def setup_environment():
     # os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # run on CPU
     os.environ["XLA_FLAGS"] = "--xla_gpu_strict_conv_algorithm_picker=false"
 
-    if tf.config.list_physical_devices("GPU"):
-        print("Using GPU...")
+    # Configure GPU memory growth to prevent over-allocation
+    gpus = tf.config.list_physical_devices("GPU")
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            print("Using GPU with memory growth enabled...")
+        except RuntimeError as e:
+            print(f"GPU memory growth setup failed: {e}")
     else:
         print("Using CPU...")
 
@@ -167,7 +174,9 @@ class MILAttentionLayer(layers.Layer):
 
 
 class MILModel(keras.Model):
-    def __init__(self, input_shape, M, weight_params_dim=16, use_gated=False, mode=None, **kwargs):
+    def __init__(
+        self, input_shape, M, weight_params_dim=16, use_gated=False, mode=None, **kwargs
+    ):
         super(MILModel, self).__init__(**kwargs)
 
         # Store parameters
@@ -175,7 +184,9 @@ class MILModel(keras.Model):
         self.K2, self.B = input_shape
         self.weight_params_dim = weight_params_dim
         self.use_gated = use_gated
-        self.mode = mode if mode is not None else MODE  # Use parameter or fall back to global
+        self.mode = (
+            mode if mode is not None else MODE
+        )  # Use parameter or fall back to global
 
         # Mode-specific batchnorm
         self.embeddings_learning_rate = 5e-4 if self.mode != "baseline" else 1e-3
@@ -360,7 +371,7 @@ def train(train_dataset, val_dataset, model, num_epochs=100, batch_size=1, mode=
     # Path where to save best weights.
 
     # Use model's mode if available, otherwise fall back to global MODE
-    current_mode = mode if mode is not None else (getattr(model, 'mode', MODE))
+    current_mode = mode if mode is not None else (getattr(model, "mode", MODE))
 
     # Callbacks
     clear_memory = ClearMemory()

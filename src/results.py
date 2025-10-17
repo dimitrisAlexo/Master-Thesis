@@ -15,10 +15,16 @@ import gc
 import numpy as np
 import json
 import pickle as pkl
+import sys
+import subprocess
 
 
 def run_multiple_tremor_experiments(
-    sdataset, k=5, n_repeats=5, repetitions=10, save_path="../results/results_tremor.json"
+    sdataset,
+    k=5,
+    n_repeats=5,
+    repetitions=10,
+    save_path="../results/results_tremor.json",
 ):
     """
     Run the rkf_evaluate experiment multiple times, calculate the average and standard deviation
@@ -115,13 +121,19 @@ def run_multiple_tremor_experiments(
 
 
 def run_multiple_tremor_loso_experiments(
-    sdataset, repetitions=10, save_path="../results/500_results_tremor_baseline.json"
+    sdataset,
+    repetitions=10,
+    save_path="../results/200_results_tremor_baseline.json",
+    restart_interval=1,
 ):
     """
     Run the tremor loso_evaluate experiment multiple times, calculate the average and standard deviation
     of accuracy, sensitivity, specificity, precision, and F1-score, ignoring NaN values, and
-    save intermediate results to avoid data loss.
+    save intermediate results to avoid data loss. Restarts process every restart_interval repetitions.
     """
+    # Check if we should restart the process
+    start_rep = int(os.environ.get("RESULTS_START_REP", "0"))
+
     # Load existing results if available
     if os.path.exists(save_path):
         with open(save_path, "r") as file:
@@ -131,7 +143,7 @@ def run_multiple_tremor_loso_experiments(
             specificity_list = saved_data.get("specificity_list", [])
             precision_list = saved_data.get("precision_list", [])
             f1_score_list = saved_data.get("f1_score_list", [])
-            start_iteration = len(accuracy_list)
+            start_iteration = max(len(accuracy_list), start_rep)
     else:
         # Initialize lists to store metric values across repetitions
         accuracy_list = []
@@ -139,7 +151,40 @@ def run_multiple_tremor_loso_experiments(
         specificity_list = []
         precision_list = []
         f1_score_list = []
-        start_iteration = 0
+        start_iteration = start_rep
+
+    # If we've completed all repetitions, print final results and exit
+    if start_iteration >= repetitions:
+        print("All repetitions completed!")
+
+        # Calculate and print final statistics
+        def safe_mean_std(values):
+            if len(values) == 0 or all(np.isnan(values)):
+                return np.nan, np.nan
+            return np.nanmean(values), np.nanstd(values)
+
+        accuracy_mean, accuracy_std = safe_mean_std(accuracy_list)
+        sensitivity_mean, sensitivity_std = safe_mean_std(sensitivity_list)
+        specificity_mean, specificity_std = safe_mean_std(specificity_list)
+        precision_mean, precision_std = safe_mean_std(precision_list)
+        f1_score_mean, f1_score_std = safe_mean_std(f1_score_list)
+
+        print("FINAL RESULTS:")
+        print(f"accuracy_mean: {accuracy_mean:.4f}, accuracy_std: {accuracy_std:.4f}")
+        print(
+            f"sensitivity_mean: {sensitivity_mean:.4f}, sensitivity_std: {sensitivity_std:.4f}"
+        )
+        print(
+            f"specificity_mean: {specificity_mean:.4f}, specificity_std: {specificity_std:.4f}"
+        )
+        print(
+            f"precision_mean: {precision_mean:.4f}, precision_std: {precision_std:.4f}"
+        )
+        print(f"f1_score_mean: {f1_score_mean:.4f}, f1_score_std: {f1_score_std:.4f}")
+        return
+
+    # Calculate end iteration for this session
+    end_iteration = min(start_iteration + restart_interval, repetitions)
 
     # Helper function to safely compute mean and std, ignoring NaN values
     def safe_mean_std(values):
@@ -147,8 +192,8 @@ def run_multiple_tremor_loso_experiments(
             return np.nan, np.nan
         return np.nanmean(values), np.nanstd(values)
 
-    # Run the experiment 'repetitions' times
-    for i in range(start_iteration, repetitions):
+    # Run the experiment for this session
+    for i in range(start_iteration, end_iteration):
         print(f"\033[91mRepetition {i + 1}/{repetitions}\033[0m")
         try:
             # Perform the tremor loso evaluation
@@ -180,7 +225,18 @@ def run_multiple_tremor_loso_experiments(
         # Memory management
         gc.collect()
 
-    # Calculate mean and standard deviation for each metric
+    # If we haven't completed all repetitions, restart the process
+    if end_iteration < repetitions:
+        print(f"Completed {end_iteration} repetitions. Restarting process...")
+        # Set environment variable for next start position
+        env = os.environ.copy()
+        env["RESULTS_START_REP"] = str(end_iteration)
+
+        # Restart the script and exit current process immediately
+        subprocess.Popen([sys.executable] + sys.argv, env=env)
+        sys.exit(0)
+
+    # Calculate mean and standard deviation for each metric (final run)
     accuracy_mean, accuracy_std = safe_mean_std(accuracy_list)
     sensitivity_mean, sensitivity_std = safe_mean_std(sensitivity_list)
     specificity_mean, specificity_std = safe_mean_std(specificity_list)
@@ -212,13 +268,19 @@ def run_multiple_tremor_loso_experiments(
 
 
 def run_multiple_typing_experiments(
-    sdataset, repetitions=10, save_path="../results/results_typing_pretrained.json"
+    sdataset,
+    repetitions=10,
+    save_path="../results/200_results_typing_baseline.json",
+    restart_interval=2,
 ):
     """
     Run the loso_evaluate experiment multiple times, calculate the average and standard deviation
     of accuracy, sensitivity, specificity, precision, and F1-score, ignoring NaN values, and
-    save intermediate results to avoid data loss.
+    save intermediate results to avoid data loss. Restarts process every restart_interval repetitions.
     """
+    # Check if we should restart the process
+    start_rep = int(os.environ.get("RESULTS_START_REP", "0"))
+
     # Load existing results if available
     if os.path.exists(save_path):
         with open(save_path, "r") as file:
@@ -228,7 +290,7 @@ def run_multiple_typing_experiments(
             specificity_list = saved_data.get("specificity_list", [])
             precision_list = saved_data.get("precision_list", [])
             f1_score_list = saved_data.get("f1_score_list", [])
-            start_iteration = len(accuracy_list)
+            start_iteration = max(len(accuracy_list), start_rep)
     else:
         # Initialize lists to store metric values across repetitions
         accuracy_list = []
@@ -236,7 +298,40 @@ def run_multiple_typing_experiments(
         specificity_list = []
         precision_list = []
         f1_score_list = []
-        start_iteration = 0
+        start_iteration = start_rep
+
+    # If we've completed all repetitions, print final results and exit
+    if start_iteration >= repetitions:
+        print("All repetitions completed!")
+
+        # Calculate and print final statistics
+        def safe_mean_std(values):
+            if len(values) == 0 or all(np.isnan(values)):
+                return np.nan, np.nan
+            return np.nanmean(values), np.nanstd(values)
+
+        accuracy_mean, accuracy_std = safe_mean_std(accuracy_list)
+        sensitivity_mean, sensitivity_std = safe_mean_std(sensitivity_list)
+        specificity_mean, specificity_std = safe_mean_std(specificity_list)
+        precision_mean, precision_std = safe_mean_std(precision_list)
+        f1_score_mean, f1_score_std = safe_mean_std(f1_score_list)
+
+        print("FINAL RESULTS:")
+        print(f"accuracy_mean: {accuracy_mean:.4f}, accuracy_std: {accuracy_std:.4f}")
+        print(
+            f"sensitivity_mean: {sensitivity_mean:.4f}, sensitivity_std: {sensitivity_std:.4f}"
+        )
+        print(
+            f"specificity_mean: {specificity_mean:.4f}, specificity_std: {specificity_std:.4f}"
+        )
+        print(
+            f"precision_mean: {precision_mean:.4f}, precision_std: {precision_std:.4f}"
+        )
+        print(f"f1_score_mean: {f1_score_mean:.4f}, f1_score_std: {f1_score_std:.4f}")
+        return
+
+    # Calculate end iteration for this session
+    end_iteration = min(start_iteration + restart_interval, repetitions)
 
     # Helper function to safely compute mean and std, ignoring NaN values
     def safe_mean_std(values):
@@ -244,8 +339,8 @@ def run_multiple_typing_experiments(
             return np.nan, np.nan
         return np.nanmean(values), np.nanstd(values)
 
-    # Run the experiment 'repetitions' times
-    for i in range(start_iteration, repetitions):
+    # Run the experiment for this session
+    for i in range(start_iteration, end_iteration):
         print(f"\033[91mRepetition {i + 1}/{repetitions}\033[0m")
         try:
             # Perform the loso evaluation
@@ -277,7 +372,18 @@ def run_multiple_typing_experiments(
         # Memory management
         gc.collect()
 
-    # Calculate mean and standard deviation for each metric
+    # If we haven't completed all repetitions, restart the process
+    if end_iteration < repetitions:
+        print(f"Completed {end_iteration} repetitions. Restarting process...")
+        # Set environment variable for next start position
+        env = os.environ.copy()
+        env["RESULTS_START_REP"] = str(end_iteration)
+
+        # Restart the script and exit current process immediately
+        subprocess.Popen([sys.executable] + sys.argv, env=env)
+        sys.exit(0)
+
+    # Calculate mean and standard deviation for each metric (final run)
     accuracy_mean, accuracy_std = safe_mean_std(accuracy_list)
     sensitivity_mean, sensitivity_std = safe_mean_std(sensitivity_list)
     specificity_mean, specificity_std = safe_mean_std(specificity_list)
@@ -343,18 +449,18 @@ if __name__ == "__main__":
     print("RESULTS")
 
     # Load datasets
-    # typing_sdataset = load_typing_dataset()
-    tremor_sdataset = load_tremor_dataset()
+    typing_sdataset = load_typing_dataset()
+    # tremor_sdataset = load_tremor_dataset()
 
     # Run typing experiments if dataset is available
-    # if typing_sdataset is not None:
-    #     print("Running typing experiments...")
-    #     run_multiple_typing_experiments(typing_sdataset, repetitions=10)
+    if typing_sdataset is not None:
+        print("Running typing experiments...")
+        run_multiple_typing_experiments(typing_sdataset, repetitions=10)
 
     # Run tremor experiments if dataset is available (uncomment to run)
-    if tremor_sdataset is not None:
-        # print("Running tremor RKF experiments...")
-        # run_multiple_tremor_experiments(tremor_sdataset, k=5, n_repeats=5, repetitions=10)
+    # if tremor_sdataset is not None:
+    #     # print("Running tremor RKF experiments...")
+    #     # run_multiple_tremor_experiments(tremor_sdataset, k=5, n_repeats=5, repetitions=10)
 
-        print("Running tremor LOSO experiments...")
-        run_multiple_tremor_loso_experiments(tremor_sdataset, repetitions=10)
+    #     print("Running tremor LOSO experiments...")
+    #     run_multiple_tremor_loso_experiments(tremor_sdataset, repetitions=10)
