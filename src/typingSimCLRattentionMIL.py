@@ -25,6 +25,13 @@ from sklearn.model_selection import LeaveOneOut
 from sklearn.model_selection import RepeatedKFold
 from sklearn.metrics import confusion_matrix
 
+# Default parameters - can be overridden when importing
+DEFAULT_K2 = 500
+DEFAULT_PRETRAIN_NUM_EPOCHS = 100
+DEFAULT_NUM_EPOCHS = 50
+DEFAULT_BATCH_SIZE = 8
+DEFAULT_M = 64
+
 
 def print_memory_usage():
     process = psutil.Process()
@@ -365,7 +372,14 @@ def lr_schedule(epoch, lr, total_epochs=100):
     return lr
 
 
-def train(train_dataset, val_dataset, model, num_epochs=100, batch_size=1, mode=None):
+def train(
+    train_dataset,
+    val_dataset,
+    model,
+    num_epochs=DEFAULT_PRETRAIN_NUM_EPOCHS,
+    batch_size=DEFAULT_BATCH_SIZE,
+    mode=None,
+):
     # Train model.
     # Prepare callbacks.
     # Path where to save best weights.
@@ -439,14 +453,6 @@ def train(train_dataset, val_dataset, model, num_epochs=100, batch_size=1, mode=
     return model
 
 
-# Default parameters - can be overridden when importing
-DEFAULT_K2 = 100
-DEFAULT_PRETRAIN_NUM_EPOCHS = 100
-DEFAULT_NUM_EPOCHS = 50
-DEFAULT_BATCH_SIZE = 1
-DEFAULT_M = 64
-
-
 def predict(dataset, trained_model):
     # Predict output classes on data.
     predictions = trained_model.predict(dataset)
@@ -458,7 +464,7 @@ def predict(dataset, trained_model):
     return predictions
 
 
-def loso_evaluate(data, input_shape=None, M=64, batch_size=1):
+def loso_evaluate(data, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_SIZE):
     # Extract the bags and labels
     bags = data["X"].tolist()
     y = data["y"].tolist()
@@ -569,7 +575,9 @@ def loso_evaluate(data, input_shape=None, M=64, batch_size=1):
     return all_true_labels, all_predicted_probs, all_predicted_labels, results
 
 
-def rkf_evaluate(data, k, n_repeats, input_shape=None, M=64, batch_size=1):
+def rkf_evaluate(
+    data, k, n_repeats, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_SIZE
+):
     # Extract the bags and labels
     bags = data["X"].tolist()
     y = data["y"].tolist()
@@ -706,7 +714,7 @@ def rkf_evaluate(data, k, n_repeats, input_shape=None, M=64, batch_size=1):
 
 
 def rkf_evaluate_with_validation(
-    data, k, n_repeats, input_shape=None, M=64, batch_size=1
+    data, k, n_repeats, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_SIZE
 ):
     # Extract the bags and labels
     bags = data["X"].tolist()
@@ -863,10 +871,10 @@ if __name__ == "__main__":
     assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
 
     # Parameters
-    K2 = 100
-    num_epochs = 100
-    batch_size = 1
-    M = 64
+    K2 = DEFAULT_K2
+    num_epochs = DEFAULT_PRETRAIN_NUM_EPOCHS
+    batch_size = DEFAULT_BATCH_SIZE
+    M = DEFAULT_M
 
     # Load dataset
     # Adjust the paths to be relative to the current script location

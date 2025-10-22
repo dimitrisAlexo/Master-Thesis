@@ -5,6 +5,7 @@ import time
 import gc
 import sys
 import pickle as pkl
+import subprocess
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
@@ -67,20 +68,22 @@ print("Using mixed precision...")
 
 
 # === FUSION MODEL PARAMETERS ===
-MODE = "simclr"
+MODE = "baseline"
 assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
 print(f"Using MODE: {MODE}")
-print(f"SimCLR weight loading: {'ENABLED' if MODE in ['simclr', 'federated'] else 'DISABLED'}")
+print(
+    f"SimCLR weight loading: {'ENABLED' if MODE in ['simclr', 'federated'] else 'DISABLED'}"
+)
 
 # Tremor parameters
 TREMOR_E_THRES = 0.15 * 2
-TREMOR_KT = 100
+TREMOR_KT = 200
 TREMOR_NUM_EPOCHS = 50
 TREMOR_BATCH_SIZE = 8  # Paper specifies batch size of 8
 TREMOR_M = 64
 
 # Typing parameters
-TYPING_K2 = 100
+TYPING_K2 = 500
 TYPING_NUM_EPOCHS = 100
 TYPING_BATCH_SIZE = 8  # Paper specifies batch size of 8
 TYPING_M = 64
@@ -334,6 +337,9 @@ def create_endtask_dataset():
     y_array = np.array(fusion_df["y"].tolist(), dtype=int)
     for i, label_name in enumerate(["Tremor", "FMI", "PD"]):
         print(f"  {label_name} positives: {np.sum(y_array[:, i])}/{len(y_array)}")
+    print("X1 shape:", np.array(fusion_df["X1"].tolist()).shape)
+    print("X2 shape:", np.array(fusion_df["X2"].tolist()).shape)
+    print("y shape:", y_array.shape)
     return fusion_df
 
     # # Option 2: Create dataset from raw data (current approach)
@@ -348,12 +354,12 @@ def create_endtask_dataset():
     #     tremor_label_str="tremor_manual",  # Use tremor_manual as per paper methodology
     # )
 
-    # print(f"Final dataset: {len(fusion_df)} subjects")
-    # y_array = np.array(fusion_df["y"].tolist(), dtype=int)
-    # for i, label_name in enumerate(["Tremor", "FMI", "PD"]):
-    #     print(f"  {label_name} positives: {np.sum(y_array[:, i])}/{len(y_array)}")
+    print(f"Final dataset: {len(fusion_df)} subjects")
+    y_array = np.array(fusion_df["y"].tolist(), dtype=int)
+    for i, label_name in enumerate(["Tremor", "FMI", "PD"]):
+        print(f"  {label_name} positives: {np.sum(y_array[:, i])}/{len(y_array)}")
 
-    # return fusion_df
+    return fusion_df
 
 
 class FusionModel(keras.Model):
@@ -363,7 +369,9 @@ class FusionModel(keras.Model):
     Use get_bag_embeddings() if fused embedding is required externally.
     """
 
-    def __init__(self, tremor_input_shape, typing_input_shape, M=64, mode="baseline", **kwargs):
+    def __init__(
+        self, tremor_input_shape, typing_input_shape, M=64, mode="baseline", **kwargs
+    ):
         super(FusionModel, self).__init__(**kwargs)
 
         self.M = M
@@ -371,8 +379,12 @@ class FusionModel(keras.Model):
         self.typing_input_shape = typing_input_shape
 
         # Create tremor and typing branches
-        self.tremor_branch = TremorMILModel(input_shape=tremor_input_shape, M=M, mode=mode)
-        self.typing_branch = TypingMILModel(input_shape=typing_input_shape, M=M, mode=mode)
+        self.tremor_branch = TremorMILModel(
+            input_shape=tremor_input_shape, M=M, mode=mode
+        )
+        self.typing_branch = TypingMILModel(
+            input_shape=typing_input_shape, M=M, mode=mode
+        )
 
         # Multi-label classifier (define BEFORE loading weights/freeze so attribute exists)
         self.multilabel_classifier = keras.Sequential(
@@ -646,7 +658,6 @@ def fusion_loso_evaluate(endtask_df):
         gc.collect()
         k.clear_session()
 
-
     # Calculate overall metrics
     all_predictions = np.array(all_predictions)
     all_true_labels = np.array(all_true_labels)
@@ -701,13 +712,19 @@ def fusion_loso_evaluate(endtask_df):
 
 
 def run_multiple_fusion_experiments(
-    endtask_df, repetitions=10, save_path="../results/results_fusion_pretrained.json"
+    endtask_df,
+    repetitions=10,
+    save_path="../results/200_500_results_fusion_baseline.json",
+    restart_interval=1,
 ):
     """
     Run the fusion LOSO experiment multiple times, calculate the average and standard deviation
-    of metrics for each label, similar to results.py pattern.
+    of metrics for each label, similar to results.py pattern. Restarts process every restart_interval repetitions.
     """
     import json
+
+    # Check if we should restart the process
+    start_rep = int(os.environ.get("RESULTS_START_REP", "0"))
 
     # Load existing results if available
     if os.path.exists(save_path):
@@ -715,9 +732,70 @@ def run_multiple_fusion_experiments(
             saved_data = json.load(file)
             start_iteration = saved_data.get("completed_runs", 0)
             all_metrics = saved_data.get("all_metrics", [])
+            start_iteration = max(start_iteration, start_rep)
     else:
-        start_iteration = 0
+        start_iteration = start_rep
         all_metrics = []
+
+    # If we've completed all repetitions, print final results and exit
+    if start_iteration >= repetitions:
+        print("All repetitions completed!")
+
+        # Helper function to safely compute mean and std, ignoring NaN values
+        def safe_mean_std(values):
+            if len(values) == 0 or all(np.isnan(values)):
+                return np.nan, np.nan
+            return np.nanmean(values), np.nanstd(values)
+
+        # Calculate mean and standard deviation for each metric
+        if len(all_metrics) > 0:
+            metrics_summary = {}
+
+            # Get all metric names from first run
+            metric_names = list(all_metrics[0].keys())
+
+            for metric_name in metric_names:
+                values = [
+                    run_metrics[metric_name]
+                    for run_metrics in all_metrics
+                    if not np.isnan(run_metrics[metric_name])
+                ]
+                mean_val, std_val = safe_mean_std(values)
+                metrics_summary[f"{metric_name}_mean"] = mean_val
+                metrics_summary[f"{metric_name}_std"] = std_val
+
+            # Print the metrics summary
+            print("\n" + "=" * 50)
+            print("FINAL FUSION EXPERIMENTS SUMMARY")
+            print("=" * 50)
+
+            label_names = ["tremor", "fmi", "pd"]
+            metric_types = [
+                "accuracy",
+                "sensitivity",
+                "specificity",
+                "precision",
+                "f1_score",
+            ]
+
+            for label in label_names:
+                print(f"\n{label.upper()} Results:")
+                for metric in metric_types:
+                    mean_key = f"{label}_{metric}_mean"
+                    std_key = f"{label}_{metric}_std"
+                    if mean_key in metrics_summary:
+                        mean_val = metrics_summary[mean_key]
+                        std_val = metrics_summary[std_key]
+                        if not np.isnan(mean_val):
+                            print(
+                                f"  {metric.capitalize()}: {mean_val:.4f} ± {std_val:.4f}"
+                            )
+                        else:
+                            print(f"  {metric.capitalize()}: No valid values (all NaN)")
+        return
+
+    # Calculate end iteration for this session
+    end_iteration = min(start_iteration + restart_interval, repetitions)
 
     # Helper function to safely compute mean and std, ignoring NaN values
     def safe_mean_std(values):
@@ -725,8 +803,8 @@ def run_multiple_fusion_experiments(
             return np.nan, np.nan
         return np.nanmean(values), np.nanstd(values)
 
-    # Run the experiment 'repetitions' times
-    for i in range(start_iteration, repetitions):
+    # Run the experiment for this session
+    for i in range(start_iteration, end_iteration):
         print(f"\033[91mFusion Repetition {i + 1}/{repetitions}\033[0m")
         try:
             # Perform the fusion LOSO evaluation
@@ -745,12 +823,26 @@ def run_multiple_fusion_experiments(
 
         except Exception as e:
             print(f"Error during fusion repetition {i + 1}: {e}")
+            import traceback
+
+            traceback.print_exc()
 
         # Memory management
         gc.collect()
         k.clear_session()
 
-    # Calculate mean and standard deviation for each metric
+    # If we haven't completed all repetitions, restart the process
+    if end_iteration < repetitions:
+        print(f"Completed {end_iteration} repetitions. Restarting process...")
+        # Set environment variable for next start position
+        env = os.environ.copy()
+        env["RESULTS_START_REP"] = str(end_iteration)
+
+        # Restart the script and exit current process immediately
+        subprocess.Popen([sys.executable] + sys.argv, env=env)
+        sys.exit(0)
+
+    # Calculate mean and standard deviation for each metric (final run)
     if len(all_metrics) > 0:
         metrics_summary = {}
 
