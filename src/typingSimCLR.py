@@ -59,8 +59,8 @@ labeled_dataset_size = 100
 M = 64
 K2 = 500
 batch_size = 512
-labeled_batch_size = 1
-num_epochs = 300
+labeled_batch_size = 4
+num_epochs = 200
 temperature = 0.01
 learning_rate = 0.001
 

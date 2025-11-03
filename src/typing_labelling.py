@@ -118,7 +118,7 @@ print("=" * 50)
 # plot_typing_histograms(X, 9, save_fig=True)
 # plot_typing_histograms(X, 10, save_fig=True)
 
-# # plot_typing_histograms(X, 11, save_fig=True)
+# plot_typing_histograms(X, 11, save_fig=True)
 # plot_typing_histograms(X, 12, save_fig=True)
 # plot_typing_histograms(X, 13, save_fig=True)
 # plot_typing_histograms(X, 14, save_fig=True)
@@ -209,15 +209,15 @@ labeled_histograms_dataset = label_histograms(
     label=1,
 )
 
+# FMI = 0
 labeled_histograms_dataset = label_histograms(
     labeled_histograms_dataset,
     X,
-    subject_idx=9,
+    subject_idx=11,
     histogram_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    label=1,
+    label=0,
 )
 
-# FMI = 0
 labeled_histograms_dataset = label_histograms(
     labeled_histograms_dataset,
     X,

@@ -68,7 +68,7 @@ print("Using mixed precision...")
 
 
 # === FUSION MODEL PARAMETERS ===
-MODE = "baseline"
+MODE = "simclr"
 assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
 print(f"Using MODE: {MODE}")
 print(
@@ -79,18 +79,18 @@ print(
 TREMOR_E_THRES = 0.15 * 2
 TREMOR_KT = 200
 TREMOR_NUM_EPOCHS = 50
-TREMOR_BATCH_SIZE = 8  # Paper specifies batch size of 8
+TREMOR_BATCH_SIZE = 4  # Paper specifies batch size of 8
 TREMOR_M = 64
 
 # Typing parameters
 TYPING_K2 = 500
 TYPING_NUM_EPOCHS = 100
-TYPING_BATCH_SIZE = 8  # Paper specifies batch size of 8
+TYPING_BATCH_SIZE = 4  # Paper specifies batch size of 8
 TYPING_M = 64
 
 # Fusion parameters
 FUSION_NUM_EPOCHS = 100
-FUSION_BATCH_SIZE = 8  # Paper specifies batch size of 8
+FUSION_BATCH_SIZE = 4  # Paper specifies batch size of 8
 
 
 def load_tremor_dataset():
@@ -714,7 +714,7 @@ def fusion_loso_evaluate(endtask_df):
 def run_multiple_fusion_experiments(
     endtask_df,
     repetitions=10,
-    save_path="../results/200_500_results_fusion_baseline.json",
+    save_path="../results/200_500_results_fusion_pretrained.json",
     restart_interval=1,
 ):
     """
