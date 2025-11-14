@@ -60,7 +60,7 @@ M = 64
 K2 = 500
 batch_size = 512
 labeled_batch_size = 4
-num_epochs = 200
+num_epochs = 150
 temperature = 0.01
 learning_rate = 0.001
 
@@ -127,15 +127,19 @@ labeled_gdataset_test = (
 class TypingAugmentation:
     def __init__(
         self,
-        noise_factor=0.01,  # 0.01
+        noise_factor=0.015,  # 0.01
         dropout_rate=0.01,  # 0.01
         n_perm_seg=8,
-        redistribution_threshold=0.03,
+        scale_range=(0.85, 1.15),  # Random scaling range
+        max_shift_hold=2,  # Max bin shift (in bins) for hold time
+        max_shift_flight=3,  # Max bin shift for flight time
     ):
         self.noise_factor = noise_factor
         self.dropout_rate = dropout_rate
         self.n_perm_seg = n_perm_seg
-        self.redistribution_threshold = redistribution_threshold
+        self.scale_range = scale_range
+        self.max_shift_hold = max_shift_hold
+        self.max_shift_flight = max_shift_flight
 
     def add_noise(self, data):
         """Add Gaussian noise to typing histograms"""
@@ -222,6 +226,83 @@ class TypingAugmentation:
         # Concatenate the permuted sections back together
         return tf.concat([permuted_hold_time, permuted_flight_time], axis=1)
 
+    def random_scaling(self, data):
+        """Randomly scale histogram magnitude per sample, then renormalize."""
+        batch_size = tf.shape(data)[0]
+        scale = tf.random.uniform(
+            [batch_size, 1],
+            minval=self.scale_range[0],
+            maxval=self.scale_range[1],
+            dtype=tf.float32,
+        )
+        return data * scale
+
+    def temporal_shift(self, data):
+        """
+        Shift bins slightly to simulate faster/slower typing.
+        Hold time: small shift (±max_shift_hold)
+        Flight time: larger shift (±max_shift_flight)
+        Uses precomputed shifts for all possible values to be XLA-compatible.
+        """
+        if self.max_shift_hold == 0 and self.max_shift_flight == 0:
+            return data
+
+        batch_size = tf.shape(data)[0]
+        hold_time_data = data[:, :101]
+        flight_time_data = data[:, 101:]
+
+        def shift_section(section_data, max_shift):
+            if max_shift == 0:
+                return section_data
+
+            vec_len = tf.shape(section_data)[1]
+
+            # Generate random shifts for each sample in the batch
+            shift_vals = tf.random.uniform(
+                [batch_size], minval=-max_shift, maxval=max_shift + 1, dtype=tf.int32
+            )
+
+            # Precompute all possible shifted versions (2*max_shift + 1 versions)
+            all_shifts = []
+            for shift_amount in range(-max_shift, max_shift + 1):
+                if shift_amount > 0:
+                    # Shift right: pad left, drop right
+                    padded = tf.pad(
+                        section_data, [[0, 0], [shift_amount, 0]], constant_values=0.0
+                    )
+                    shifted = padded[:, :vec_len]
+                elif shift_amount < 0:
+                    # Shift left: drop left, pad right
+                    padded = tf.pad(
+                        section_data, [[0, 0], [0, -shift_amount]], constant_values=0.0
+                    )
+                    shifted = padded[:, -shift_amount:]
+                else:
+                    # No shift
+                    shifted = section_data
+                all_shifts.append(shifted)
+
+            # Stack all shifted versions: shape [2*max_shift+1, batch_size, vec_len]
+            all_shifts_stacked = tf.stack(all_shifts, axis=0)
+
+            # Select the appropriate shifted version for each sample
+            # Convert shift values to indices (shift + max_shift)
+            indices = shift_vals + max_shift
+
+            # Gather the appropriate shifts for each batch element
+            # We need to gather along axis 0 for each batch element
+            batch_indices = tf.range(batch_size)
+            gather_indices = tf.stack([indices, batch_indices], axis=1)
+
+            result = tf.gather_nd(all_shifts_stacked, gather_indices)
+
+            return result
+
+        shifted_hold = shift_section(hold_time_data, self.max_shift_hold)
+        shifted_flight = shift_section(flight_time_data, self.max_shift_flight)
+
+        return tf.concat([shifted_hold, shifted_flight], axis=1)
+
     def normalize_histogram(self, data):
         """
         Normalize histograms so that each section sums to 1.
@@ -248,198 +329,15 @@ class TypingAugmentation:
         # Concatenate the normalized sections back together
         return tf.concat([normalized_hold_time, normalized_flight_time], axis=1)
 
-    def uniform_redistribution(self, data):
-        """
-        Redistribute probability mass uniformly among histogram bins above threshold.
-        This augmentation flattens the distribution while preserving active regions
-        and maintaining the normalization property (sum = 1 for each section).
-        """
-        threshold = self.redistribution_threshold
-
-        # Split the data into hold time (0-100) and flight time (101-501) sections
-        hold_time_data = data[:, :101]  # First 101 features (0-100)
-        flight_time_data = data[:, 101:]  # Remaining 401 features (101-501)
-
-        def redistribute_section(section_data):
-            """Redistribute probability mass within a section"""
-            batch_size = tf.shape(section_data)[0]
-            section_features = tf.shape(section_data)[1]
-
-            # Create mask for bins above threshold
-            above_threshold = section_data > threshold
-
-            # Count number of active bins per sample
-            num_active_bins = tf.reduce_sum(
-                tf.cast(above_threshold, tf.float32), axis=1, keepdims=True
-            )
-
-            # Avoid division by zero - if no bins are above threshold, keep original
-            num_active_bins = tf.maximum(num_active_bins, 1.0)
-
-            # Calculate current sum for normalization
-            current_sum = tf.reduce_sum(section_data, axis=1, keepdims=True)
-            current_sum = tf.maximum(current_sum, 1e-8)
-
-            # Calculate uniform value for active bins
-            uniform_value = current_sum / num_active_bins
-
-            # Create redistributed section: uniform value for active bins, zero for inactive
-            redistributed = tf.where(above_threshold, uniform_value, 0.0)
-
-            return redistributed
-
-        # Apply redistribution to both sections
-        redistributed_hold_time = redistribute_section(hold_time_data)
-        redistributed_flight_time = redistribute_section(flight_time_data)
-
-        # Concatenate the redistributed sections back together
-        return tf.concat([redistributed_hold_time, redistributed_flight_time], axis=1)
-
-    def scaling_augmentation(self, data, scale_range=(0.9, 1.1)):
-        """
-        Scale the histogram bins to simulate typing speed variations.
-        Scaling < 1.0 compresses the distribution leftward (faster typing).
-        Scaling > 1.0 stretches the distribution rightward (slower typing).
-
-        This augmentation:
-        - Simulates natural variations in typing speed
-        - Preserves the shape of the distribution
-        - Maintains normalization (sum = 1 for each section)
-
-        Args:
-            data: Input histogram tensor
-            scale_range: Tuple of (min_scale, max_scale) for random scaling
-        """
-        batch_size = tf.shape(data)[0]
-
-        # Split the data into hold time (0-100) and flight time (101-501) sections
-        hold_time_data = data[:, :101]  # First 101 features (0-100)
-        flight_time_data = data[:, 101:]  # Remaining 401 features (101-501)
-
-        def scale_section(section_data, section_size):
-            """Apply scaling to a single section"""
-            # Generate random scale factors for each sample in the batch
-            scale_factors = tf.random.uniform(
-                shape=[batch_size],
-                minval=scale_range[0],
-                maxval=scale_range[1],
-                dtype=tf.float32,
-            )
-
-            # Create index arrays for interpolation
-            original_indices = tf.range(section_size, dtype=tf.float32)
-
-            # Apply scaling transformation to each sample
-            scaled_section = tf.map_fn(
-                lambda x: self._interpolate_histogram(
-                    x[0], original_indices, x[1], section_size
-                ),
-                (section_data, scale_factors),
-                fn_output_signature=tf.float32,
-            )
-
-            return scaled_section
-
-        # Scale both sections separately
-        scaled_hold_time = scale_section(hold_time_data, 101)
-        scaled_flight_time = scale_section(flight_time_data, 401)
-
-        # Concatenate the scaled sections back together
-        return tf.concat([scaled_hold_time, scaled_flight_time], axis=1)
-
-    def _interpolate_histogram(self, histogram, original_indices, scale_factor, size):
-        """Helper function to interpolate histogram values after scaling"""
-        # Scale the indices
-        scaled_indices = original_indices * scale_factor
-
-        # Clip to valid range
-        scaled_indices = tf.clip_by_value(
-            scaled_indices, 0.0, tf.cast(size - 1, tf.float32)
-        )
-
-        # Get floor and ceiling indices for interpolation
-        floor_indices = tf.cast(tf.math.floor(scaled_indices), tf.int32)
-        ceil_indices = tf.cast(tf.math.ceil(scaled_indices), tf.int32)
-
-        # Calculate interpolation weights
-        weights = scaled_indices - tf.math.floor(scaled_indices)
-
-        # Gather values at floor and ceiling indices
-        floor_values = tf.gather(histogram, floor_indices)
-        ceil_values = tf.gather(histogram, ceil_indices)
-
-        # Linear interpolation
-        interpolated = floor_values * (1 - weights) + ceil_values * weights
-
-        # Renormalize to maintain sum = 1
-        total = tf.reduce_sum(interpolated)
-        total = tf.maximum(total, 1e-8)
-
-        return interpolated / total
-
-    def section_intensity_scaling(self, data, scale_range=(0.9, 1.1)):
-        """
-        Randomly scale the intensity (amplitude) of hold time vs flight time sections.
-        This simulates scenarios where users have different patterns:
-        - Some users may have more distinctive hold times (scale hold up, flight down)
-        - Others may have more distinctive flight times (scale flight up, hold down)
-
-        This augmentation:
-        - Adjusts relative importance of hold time vs flight time features
-        - Creates diverse views of the same typing pattern
-        - Maintains valid probability distributions for each section
-
-        Args:
-            data: Input histogram tensor
-            scale_range: Tuple of (min_scale, max_scale) for random intensity scaling
-        """
-        batch_size = tf.shape(data)[0]
-
-        # Split the data into hold time (0-100) and flight time (101-501) sections
-        hold_time_data = data[:, :101]  # First 101 features (0-100)
-        flight_time_data = data[:, 101:]  # Remaining 401 features (101-501)
-
-        # Generate random scale factors for each sample
-        # If hold time is scaled up, flight time is scaled down, and vice versa
-        hold_scale = tf.random.uniform(
-            shape=[batch_size, 1],
-            minval=scale_range[0],
-            maxval=scale_range[1],
-            dtype=tf.float32,
-        )
-
-        # Inverse scaling for flight time to maintain balance
-        flight_scale = (
-            2.0 - hold_scale
-        )  # If hold=0.5, flight=1.5; if hold=1.5, flight=0.5
-        flight_scale = tf.clip_by_value(flight_scale, scale_range[0], scale_range[1])
-
-        # Apply scaling
-        scaled_hold_time = hold_time_data * hold_scale
-        scaled_flight_time = flight_time_data * flight_scale
-
-        # Renormalize each section to sum to 1
-        hold_sum = tf.reduce_sum(scaled_hold_time, axis=1, keepdims=True)
-        hold_sum = tf.maximum(hold_sum, 1e-8)
-        normalized_hold_time = scaled_hold_time / hold_sum
-
-        flight_sum = tf.reduce_sum(scaled_flight_time, axis=1, keepdims=True)
-        flight_sum = tf.maximum(flight_sum, 1e-8)
-        normalized_flight_time = scaled_flight_time / flight_sum
-
-        # Concatenate the scaled sections back together
-        return tf.concat([normalized_hold_time, normalized_flight_time], axis=1)
-
     def get_contrastive_augmenter(self):
         """Combine several augmentations into a single sequential model."""
         return keras.Sequential(
             [
                 layers.Lambda(self.add_noise),
                 layers.Lambda(self.dropout_features),
+                layers.Lambda(self.random_scaling),
+                # layers.Lambda(self.temporal_shift),
                 layers.Lambda(self.permute_histogram_segments),
-                # layers.Lambda(self.scaling_augmentation),
-                # layers.Lambda(self.section_intensity_scaling),
-                # layers.Lambda(self.uniform_redistribution),
                 layers.Lambda(self.normalize_histogram),
             ]
         )
@@ -450,10 +348,9 @@ class TypingAugmentation:
             [
                 layers.Lambda(self.add_noise),
                 layers.Lambda(self.dropout_features),
+                layers.Lambda(self.random_scaling),
+                # layers.Lambda(self.temporal_shift),
                 layers.Lambda(self.permute_histogram_segments),
-                # layers.Lambda(self.scaling_augmentation),
-                # layers.Lambda(self.section_intensity_scaling),
-                # layers.Lambda(self.uniform_redistribution),
                 layers.Lambda(self.normalize_histogram),
             ]
         )

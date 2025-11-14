@@ -714,7 +714,7 @@ def fusion_loso_evaluate(endtask_df):
 def run_multiple_fusion_experiments(
     endtask_df,
     repetitions=10,
-    save_path="../results/200_500_results_fusion_pretrained.json",
+    save_path="../results/200_500_results_fusion_baseline.json",
     restart_interval=1,
 ):
     """

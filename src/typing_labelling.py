@@ -209,14 +209,22 @@ labeled_histograms_dataset = label_histograms(
     label=1,
 )
 
-# FMI = 0
 labeled_histograms_dataset = label_histograms(
     labeled_histograms_dataset,
     X,
-    subject_idx=11,
+    subject_idx=9,
     histogram_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    label=0,
+    label=1,
 )
+
+# FMI = 0
+# labeled_histograms_dataset = label_histograms(
+#     labeled_histograms_dataset,
+#     X,
+#     subject_idx=11,
+#     histogram_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+#     label=0,
+# )
 
 labeled_histograms_dataset = label_histograms(
     labeled_histograms_dataset,
