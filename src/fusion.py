@@ -6,6 +6,7 @@ import gc
 import sys
 import pickle as pkl
 import subprocess
+import argparse
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
@@ -67,13 +68,28 @@ mixed_precision.set_global_policy(policy)
 print("Using mixed precision...")
 
 
+# Parse command line arguments
+parser = argparse.ArgumentParser(description="Fusion model training")
+parser.add_argument(
+    "--bimodal",
+    action="store_true",
+    help="Use bimodal SimCLR pretrained weights for typing encoder instead of typing SimCLR",
+)
+args = parser.parse_args()
+
 # === FUSION MODEL PARAMETERS ===
 MODE = "simclr"
+USE_BIMODAL_TYPING = args.bimodal
+
 assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
 print(f"Using MODE: {MODE}")
 print(
     f"SimCLR weight loading: {'ENABLED' if MODE in ['simclr', 'federated'] else 'DISABLED'}"
 )
+if USE_BIMODAL_TYPING:
+    print("=" * 80)
+    print("USING BIMODAL SIMCLR PRETRAINING FOR TYPING BRANCH")
+    print("=" * 80)
 
 # Tremor parameters
 TREMOR_E_THRES = 0.15 * 2
@@ -440,10 +456,18 @@ class FusionModel(keras.Model):
                 self.typing_branch.embeddings_network.build(
                     (None, self.typing_branch.K2, self.typing_branch.B)
                 )
-            self.typing_branch.embeddings_network.load_weights(
-                "typing_embeddings.weights.h5"
-            )
-            print(f"Loaded typing embeddings weights from typing_embeddings.weights.h5")
+
+            # Load typing weights based on --bimodal flag
+            if USE_BIMODAL_TYPING:
+                typing_weights_path = "typing_bimodal_embeddings.weights.h5"
+                print(
+                    f"✓ Loading typing embeddings weights from {typing_weights_path} (BIMODAL)"
+                )
+            else:
+                typing_weights_path = "typing_embeddings.weights.h5"
+                print(f"Loaded typing embeddings weights from {typing_weights_path}")
+
+            self.typing_branch.embeddings_network.load_weights(typing_weights_path)
 
             # Load attention weights if needed
             # Build attention layers before setting weights
