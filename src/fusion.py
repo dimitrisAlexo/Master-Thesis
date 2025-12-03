@@ -68,28 +68,30 @@ mixed_precision.set_global_policy(policy)
 print("Using mixed precision...")
 
 
-# Parse command line arguments
-parser = argparse.ArgumentParser(description="Fusion model training")
-parser.add_argument(
-    "--bimodal",
-    action="store_true",
-    help="Use bimodal SimCLR pretrained weights for typing encoder instead of typing SimCLR",
-)
-args = parser.parse_args()
-
 # === FUSION MODEL PARAMETERS ===
 MODE = "simclr"
-USE_BIMODAL_TYPING = args.bimodal
-
 assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
 print(f"Using MODE: {MODE}")
 print(
     f"SimCLR weight loading: {'ENABLED' if MODE in ['simclr', 'federated'] else 'DISABLED'}"
 )
-if USE_BIMODAL_TYPING:
-    print("=" * 80)
-    print("USING BIMODAL SIMCLR PRETRAINING FOR TYPING BRANCH")
-    print("=" * 80)
+
+# Parse command line arguments
+parser = argparse.ArgumentParser(
+    description="Fusion training with optional bimodal pretraining"
+)
+parser.add_argument(
+    "--bimodal",
+    action="store_true",
+    help="Use bimodal SimCLR weights for typing encoder instead of standard SimCLR weights",
+)
+args = parser.parse_args()
+
+USE_BIMODAL = args.bimodal
+if USE_BIMODAL:
+    print("\n" + "=" * 50)
+    print("USING BIMODAL PRETRAINING FOR TYPING BRANCH")
+    print("=" * 50 + "\n")
 
 # Tremor parameters
 TREMOR_E_THRES = 0.15 * 2
@@ -213,7 +215,10 @@ def pretrain_typing_branch(subject_exclude_id=None):
     Returns the trained model for later weight extraction.
     """
     print("\n" + "=" * 50)
-    print("PRETRAINING TYPING BRANCH")
+    if USE_BIMODAL:
+        print("PRETRAINING TYPING BRANCH (BIMODAL)")
+    else:
+        print("PRETRAINING TYPING BRANCH")
     print("=" * 50)
 
     # Load typing dataset
@@ -234,7 +239,9 @@ def pretrain_typing_branch(subject_exclude_id=None):
     print(f"Typing input shape: {typing_input_shape}")
 
     # Create typing model
-    typing_model = TypingMILModel(input_shape=typing_input_shape, M=TYPING_M, mode=MODE)
+    typing_model = TypingMILModel(
+        input_shape=typing_input_shape, M=TYPING_M, mode=MODE, use_bimodal=USE_BIMODAL
+    )
 
     # Prepare all data for training (using all subjects for pretraining)
     all_bags = typing_dataset["X"].tolist()
@@ -456,18 +463,10 @@ class FusionModel(keras.Model):
                 self.typing_branch.embeddings_network.build(
                     (None, self.typing_branch.K2, self.typing_branch.B)
                 )
-
-            # Load typing weights based on --bimodal flag
-            if USE_BIMODAL_TYPING:
-                typing_weights_path = "typing_bimodal_embeddings.weights.h5"
-                print(
-                    f"✓ Loading typing embeddings weights from {typing_weights_path} (BIMODAL)"
-                )
-            else:
-                typing_weights_path = "typing_embeddings.weights.h5"
-                print(f"Loaded typing embeddings weights from {typing_weights_path}")
-
-            self.typing_branch.embeddings_network.load_weights(typing_weights_path)
+            self.typing_branch.embeddings_network.load_weights(
+                "typing_embeddings.weights.h5"
+            )
+            print(f"Loaded typing embeddings weights from typing_embeddings.weights.h5")
 
             # Load attention weights if needed
             # Build attention layers before setting weights
@@ -738,7 +737,7 @@ def fusion_loso_evaluate(endtask_df):
 def run_multiple_fusion_experiments(
     endtask_df,
     repetitions=10,
-    save_path="../results/200_500_results_fusion_baseline.json",
+    save_path="../results/200_500_results_fusion_bimodal.json",
     restart_interval=1,
 ):
     """

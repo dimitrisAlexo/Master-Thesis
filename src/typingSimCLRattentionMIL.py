@@ -182,7 +182,14 @@ class MILAttentionLayer(layers.Layer):
 
 class MILModel(keras.Model):
     def __init__(
-        self, input_shape, M, weight_params_dim=16, use_gated=False, mode=None, **kwargs
+        self,
+        input_shape,
+        M,
+        weight_params_dim=16,
+        use_gated=False,
+        mode=None,
+        use_bimodal=False,
+        **kwargs,
     ):
         super(MILModel, self).__init__(**kwargs)
 
@@ -194,6 +201,7 @@ class MILModel(keras.Model):
         self.mode = (
             mode if mode is not None else MODE
         )  # Use parameter or fall back to global
+        self.use_bimodal = use_bimodal
 
         # Mode-specific batchnorm
         self.embeddings_learning_rate = 5e-4 if self.mode != "baseline" else 1e-3
@@ -295,7 +303,11 @@ class MILModel(keras.Model):
     def finetune(self):
         """Load pre-trained weights for the embeddings function."""
         if self.mode == "simclr":
-            weights_file = "typing_simclr_embeddings.weights.h5"
+            # Use bimodal weights if use_bimodal flag is set, otherwise use standard SimCLR weights
+            if self.use_bimodal:
+                weights_file = "typing_bimodal_embeddings.weights.h5"
+            else:
+                weights_file = "typing_simclr_embeddings.weights.h5"
         elif self.mode == "federated":
             weights_file = "federated.weights.h5"
         else:
@@ -868,7 +880,11 @@ if __name__ == "__main__":
     start = setup_environment()
 
     # Validate MODE
-    assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
+    assert MODE in [
+        "baseline",
+        "simclr",
+        "federated",
+    ], f"Invalid MODE: {MODE}"
 
     # Parameters
     K2 = DEFAULT_K2
