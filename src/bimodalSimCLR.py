@@ -58,7 +58,7 @@ dataset_size = 10240
 M = 64
 batch_size = 512
 labeled_batch_size = 4
-num_epochs = 200
+num_epochs = 1000
 temperature = 0.1
 learning_rate = 0.001
 
@@ -109,6 +109,7 @@ if len(typing_histograms) > dataset_size:
     print(f"Limited dataset to {dataset_size} pairs")
 
 print(f"Final dataset size: {len(typing_histograms)}")
+print("Note: Typing histograms are NOT normalized (already sum to 2 as per design)")
 
 # Create TensorFlow dataset for unlabeled data
 dataset = tf.data.Dataset.from_tensor_slices((typing_histograms, accel_windows))
@@ -272,6 +273,26 @@ class BimodalContrastiveModel(keras.Model):
         self.tremor_encoder.trainable = False
         print("✓ Tremor encoder frozen (teacher)")
 
+        # Projection heads for contrastive learning
+        self.typing_projection = keras.Sequential(
+            [
+                layers.Dense(2 * M),
+                layers.LeakyReLU(negative_slope=0.2),
+                layers.Dense(M),
+            ],
+            name="typing_projection",
+        )
+
+        self.tremor_projection = keras.Sequential(
+            [
+                layers.Dense(2 * M),
+                layers.LeakyReLU(negative_slope=0.2),
+                layers.Dense(M),
+            ],
+            name="tremor_projection",
+        )
+        self.tremor_projection.trainable = False
+
         # Linear probe for classification
         self.linear_probe = keras.Sequential(
             [
@@ -284,6 +305,8 @@ class BimodalContrastiveModel(keras.Model):
 
         self.typing_encoder.summary()
         self.tremor_encoder.summary()
+        self.typing_projection.summary()
+        self.tremor_projection.summary()
         self.linear_probe.summary()
 
     def compile(self, contrastive_optimizer, probe_optimizer, **kwargs):
@@ -356,27 +379,36 @@ class BimodalContrastiveModel(keras.Model):
         with tf.GradientTape() as tape:
             # Get embeddings from student (typing) encoder
             typing_embeddings = self.typing_encoder(typing_data, training=True)
+            typing_projections = self.typing_projection(
+                typing_embeddings, training=True
+            )
 
             # Get embeddings from teacher (tremor) encoder (no gradients computed)
             tremor_embeddings = self.tremor_encoder(accel_data, training=False)
-
-            # Compute contrastive loss directly on embeddings
-            contrastive_loss = self.contrastive_loss(
-                typing_embeddings, tremor_embeddings
+            tremor_projections = self.tremor_projection(
+                tremor_embeddings, training=False
             )
 
-        # Compute gradients only for typing encoder
-        trainable_weights = self.typing_encoder.trainable_weights
+            # Compute contrastive loss on projections
+            contrastive_loss = self.contrastive_loss(
+                typing_projections, tremor_projections
+            )
+
+        # Compute gradients for typing encoder and its projection head
+        trainable_weights = (
+            self.typing_encoder.trainable_weights
+            + self.typing_projection.trainable_weights
+        )
         gradients = tape.gradient(contrastive_loss, trainable_weights)
         self.contrastive_optimizer.apply_gradients(zip(gradients, trainable_weights))
 
         # Update contrastive metrics
         self.contrastive_loss_tracker.update_state(contrastive_loss)
         self.contrastive_accuracy.update_state(
-            tf.range(tf.shape(typing_embeddings)[0]),
+            tf.range(tf.shape(typing_projections)[0]),
             tf.matmul(
-                tf.nn.l2_normalize(typing_embeddings, axis=1),
-                tf.nn.l2_normalize(tremor_embeddings, axis=1),
+                tf.nn.l2_normalize(typing_projections, axis=1),
+                tf.nn.l2_normalize(tremor_projections, axis=1),
                 transpose_b=True,
             )
             / self.temperature,
