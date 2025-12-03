@@ -59,7 +59,7 @@ M = 64
 batch_size = 512
 labeled_batch_size = 4
 num_epochs = 200
-temperature = 0.01
+temperature = 0.1
 learning_rate = 0.001
 
 """
@@ -272,16 +272,6 @@ class BimodalContrastiveModel(keras.Model):
         self.tremor_encoder.trainable = False
         print("✓ Tremor encoder frozen (teacher)")
 
-        # Non-linear MLP as projection head for typing encoder
-        self.projection_head = keras.Sequential(
-            [
-                keras.Input(shape=(M,)),
-                layers.Dense(M, activation="relu"),
-                layers.Dense(M),
-            ],
-            name="projection_head",
-        )
-
         # Linear probe for classification
         self.linear_probe = keras.Sequential(
             [
@@ -294,7 +284,6 @@ class BimodalContrastiveModel(keras.Model):
 
         self.typing_encoder.summary()
         self.tremor_encoder.summary()
-        self.projection_head.summary()
         self.linear_probe.summary()
 
     def compile(self, contrastive_optimizer, probe_optimizer, **kwargs):
@@ -367,21 +356,17 @@ class BimodalContrastiveModel(keras.Model):
         with tf.GradientTape() as tape:
             # Get embeddings from student (typing) encoder
             typing_embeddings = self.typing_encoder(typing_data, training=True)
-            typing_projections = self.projection_head(typing_embeddings, training=True)
 
             # Get embeddings from teacher (tremor) encoder (no gradients computed)
             tremor_embeddings = self.tremor_encoder(accel_data, training=False)
 
-            # Compute contrastive loss
+            # Compute contrastive loss directly on embeddings
             contrastive_loss = self.contrastive_loss(
-                typing_projections, tremor_embeddings
+                typing_embeddings, tremor_embeddings
             )
 
-        # Compute gradients only for typing encoder and projection head
-        trainable_weights = (
-            self.typing_encoder.trainable_weights
-            + self.projection_head.trainable_weights
-        )
+        # Compute gradients only for typing encoder
+        trainable_weights = self.typing_encoder.trainable_weights
         gradients = tape.gradient(contrastive_loss, trainable_weights)
         self.contrastive_optimizer.apply_gradients(zip(gradients, trainable_weights))
 
@@ -390,7 +375,7 @@ class BimodalContrastiveModel(keras.Model):
         self.contrastive_accuracy.update_state(
             tf.range(tf.shape(typing_embeddings)[0]),
             tf.matmul(
-                tf.nn.l2_normalize(typing_projections, axis=1),
+                tf.nn.l2_normalize(typing_embeddings, axis=1),
                 tf.nn.l2_normalize(tremor_embeddings, axis=1),
                 transpose_b=True,
             )
