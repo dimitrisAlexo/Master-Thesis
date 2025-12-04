@@ -85,12 +85,23 @@ parser.add_argument(
     action="store_true",
     help="Use bimodal SimCLR weights for typing encoder instead of standard SimCLR weights",
 )
+parser.add_argument(
+    "--debug",
+    action="store_true",
+    help="Run only critical folds (1, 4, 13, 15, 21, 22) for debugging",
+)
 args = parser.parse_args()
 
 USE_BIMODAL = args.bimodal
 if USE_BIMODAL:
     print("\n" + "=" * 50)
     print("USING BIMODAL PRETRAINING FOR TYPING BRANCH")
+    print("=" * 50 + "\n")
+
+DEBUG_MODE = args.debug
+if DEBUG_MODE:
+    print("\n" + "=" * 50)
+    print("DEBUG MODE: Running only critical folds (1, 4, 13, 15, 21, 22)")
     print("=" * 50 + "\n")
 
 # Tremor parameters
@@ -593,7 +604,14 @@ def fusion_loso_evaluate(endtask_df):
 
     subject_indices = list(range(n_subjects))
 
+    # Define critical folds for debug mode (1-indexed folds: 1, 4, 13, 15, 21, 22)
+    critical_folds = [0, 3, 12, 14, 20, 21]  # 0-indexed
+
     for fold, (train_idx, test_idx) in enumerate(loo.split(subject_indices)):
+        # Skip non-critical folds in debug mode
+        if DEBUG_MODE and fold not in critical_folds:
+            print(f"\nSkipping Fold {fold + 1}/{n_subjects} (not a critical fold)")
+            continue
         print(f"\nFold {fold + 1}/{n_subjects}")
         print(f"Training subjects: {len(train_idx)}, Test subject: {test_idx[0]}")
 
