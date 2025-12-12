@@ -660,7 +660,7 @@ pretraining_model.compile(
 
 checkpoint = callbacks.ModelCheckpoint(
     filepath="typing_simclr_best_model.weights.h5",
-    monitor="val_p_loss",
+    monitor="c_loss",
     mode="min",
     save_best_only=True,
     save_weights_only=True,

@@ -1,7 +1,7 @@
 """
-## Bimodal SimCLR: Teacher-Student Approach
-## Teacher: Pretrained tremor encoder (frozen)
-## Student: Typing encoder (trainable)
+## Bimodal FOCAL: Factorized Orthogonal Contrastive Learning
+## Joint training of typing and tremor encoders from pretrained initialization
+## Uses shared/private space decomposition with orthogonality constraints
 """
 
 import os
@@ -24,6 +24,7 @@ from keras import callbacks
 from tf_keras import mixed_precision
 
 from utils import *
+from augmentations import Augmentation
 
 start = time.time()
 
@@ -46,9 +47,9 @@ else:
     print("Using CPU...")
 
 # Mixed precision policy
-policy = mixed_precision.Policy("mixed_float16")
-mixed_precision.set_global_policy(policy)
-print("Using mixed precision...")
+# policy = mixed_precision.Policy("mixed_float16")
+# mixed_precision.set_global_policy(policy)
+# print("Using mixed precision...")
 
 """
 ## Hyperparameter setup
@@ -56,11 +57,250 @@ print("Using mixed precision...")
 
 dataset_size = 10240
 M = 64
-batch_size = 512
-labeled_batch_size = 4
-num_epochs = 1000
-temperature = 0.1
-learning_rate = 0.001
+batch_size = 1024
+labeled_batch_size = 8
+num_epochs = 500
+temperature = 0.07
+learning_rate = 5e-4
+
+# FOCAL hyperparameters (based on FOCAL paper)
+lambda_shared = 1.0  # Main cross-modal alignment objective
+lambda_private = 0.5  # Within-modality augmentation consistency
+lambda_orthogonal = 0.1  # Orthogonality regularization
+
+"""
+## Lightweight Augmentations for FOCAL L_private
+"""
+
+
+class LightweightTypingAugmentation:
+    """Lightweight augmentations for typing histograms in FOCAL private space."""
+
+    def __init__(
+        self,
+        noise_factor=0.02,  # Increased from 0.01 for stronger augmentation
+        dropout_rate=0.01,  # Increased from 0.005
+        scale_range=(0.9, 1.1),  # Increased from (0.95, 1.05)
+        n_perm_seg=8,  # Number of permutation segments
+    ):
+        self.noise_factor = noise_factor
+        self.dropout_rate = dropout_rate
+        self.scale_range = scale_range
+        self.n_perm_seg = n_perm_seg
+
+    def add_noise(self, data):
+        """Add light Gaussian noise to typing histograms."""
+        # Cast data to float32 to match noise dtype
+        data = tf.cast(data, tf.float32)
+        noise = tf.random.normal(
+            tf.shape(data), mean=0.0, stddev=self.noise_factor, dtype=tf.float32
+        )
+        return data + noise
+
+    def dropout_features(self, data):
+        """Randomly zero out some features in the histogram."""
+        mask = tf.random.uniform(tf.shape(data)) > self.dropout_rate
+        return data * tf.cast(mask, tf.float32)
+
+    def random_scaling(self, data):
+        """Randomly scale histogram magnitude per sample."""
+        batch_size = tf.shape(data)[0]
+        scale = tf.random.uniform(
+            [batch_size, 1],
+            minval=self.scale_range[0],
+            maxval=self.scale_range[1],
+            dtype=tf.float32,
+        )
+        return data * scale
+
+    def normalize_histogram(self, data):
+        """
+        Normalize histograms so that each section sums to 1.
+        - Hold time section (0-100): normalized to sum to 1
+        - Flight time section (101-501): normalized to sum to 1
+        """
+        hold_time_data = data[:, :101]
+        flight_time_data = data[:, 101:]
+
+        hold_time_sum = tf.reduce_sum(hold_time_data, axis=1, keepdims=True)
+        hold_time_sum = tf.maximum(hold_time_sum, 1e-8)
+        normalized_hold_time = hold_time_data / hold_time_sum
+
+        flight_time_sum = tf.reduce_sum(flight_time_data, axis=1, keepdims=True)
+        flight_time_sum = tf.maximum(flight_time_sum, 1e-8)
+        normalized_flight_time = flight_time_data / flight_time_sum
+
+        return tf.concat([normalized_hold_time, normalized_flight_time], axis=1)
+
+    def random_permutation(self, data):
+        """
+        Randomly permute chunks of histogram features.
+        Permutes hold time (0-100) and flight time (101-501) sections separately.
+        """
+        batch_size = tf.shape(data)[0]
+        hold_time_data = data[:, :101]
+        flight_time_data = data[:, 101:]
+
+        # Calculate chunk size based on n_perm_seg
+        hold_chunk_size = 101 // self.n_perm_seg
+        flight_chunk_size = 401 // self.n_perm_seg
+
+        # Permute hold time chunks
+        num_hold_chunks = 101 // hold_chunk_size
+        hold_chunks = tf.reshape(
+            hold_time_data[:, : num_hold_chunks * hold_chunk_size],
+            [batch_size, num_hold_chunks, hold_chunk_size],
+        )
+        # Random permutation per sample
+        perm_indices = tf.argsort(
+            tf.random.uniform([batch_size, num_hold_chunks]), axis=1
+        )
+        hold_chunks_permuted = tf.gather(hold_chunks, perm_indices, batch_dims=1)
+        hold_permuted = tf.reshape(hold_chunks_permuted, [batch_size, -1])
+        hold_remainder = hold_time_data[:, num_hold_chunks * hold_chunk_size :]
+        hold_final = tf.concat([hold_permuted, hold_remainder], axis=1)
+
+        # Permute flight time chunks
+        num_flight_chunks = 401 // flight_chunk_size
+        flight_chunks = tf.reshape(
+            flight_time_data[:, : num_flight_chunks * flight_chunk_size],
+            [batch_size, num_flight_chunks, flight_chunk_size],
+        )
+        perm_indices = tf.argsort(
+            tf.random.uniform([batch_size, num_flight_chunks]), axis=1
+        )
+        flight_chunks_permuted = tf.gather(flight_chunks, perm_indices, batch_dims=1)
+        flight_permuted = tf.reshape(flight_chunks_permuted, [batch_size, -1])
+        flight_remainder = flight_time_data[:, num_flight_chunks * flight_chunk_size :]
+        flight_final = tf.concat([flight_permuted, flight_remainder], axis=1)
+
+        return tf.concat([hold_final, flight_final], axis=1)
+
+    def __call__(self, data):
+        """Apply augmentation pipeline."""
+        data = self.add_noise(data)
+        data = self.dropout_features(data)
+        data = self.random_scaling(data)
+        data = self.random_permutation(data)
+        data = self.normalize_histogram(data)
+        return data
+
+
+class LightweightTremorAugmentation:
+    """Lightweight augmentations for tremor accelerometer data in FOCAL private space."""
+
+    def __init__(
+        self,
+        flip_probability=0.5,  # Increased from 0.3 for stronger augmentation
+        rotation_angle=np.pi / 3,  # Increased from pi/4 (45° -> 60°)
+        noise_factor=0.02,  # Increased from 0.01
+        n_perm_seg=8,  # Number of permutation segments
+    ):
+        self.flip_probability = flip_probability
+        self.rotation_angle = rotation_angle
+        self.noise_factor = noise_factor
+        self.n_perm_seg = n_perm_seg
+
+    def add_noise(self, data):
+        """Add light Gaussian noise."""
+        # Cast data to float32 to match noise dtype
+        data = tf.cast(data, tf.float32)
+        noise = tf.random.normal(tf.shape(data), mean=0.0, stddev=self.noise_factor)
+        return data + noise
+
+    def bidirectional_flipping(self, data):
+        """Flip accelerometer axes with probability."""
+        batch_size = tf.shape(data)[0]
+        random_mask = tf.random.uniform((batch_size, 1, 1), minval=0.0, maxval=1.0)
+        flip_mask = random_mask < self.flip_probability
+        flipped_data = data * -1
+        return tf.where(flip_mask, flipped_data, data)
+
+    def rotate_axis(self, data):
+        """Light rotation around random axis."""
+
+        def rotate_single_sample(sample):
+            axis = tf.random.uniform([3], minval=-1.0, maxval=1.0, dtype=tf.float32)
+            axis = axis / tf.norm(axis)
+            angle = tf.random.uniform(
+                [],
+                minval=-self.rotation_angle,
+                maxval=self.rotation_angle,
+                dtype=tf.float32,
+            )
+
+            cos_angle = tf.cos(angle)
+            sin_angle = tf.sin(angle)
+            one_minus_cos = 1.0 - cos_angle
+            x, y, z = axis[0], axis[1], axis[2]
+
+            rotation_matrix = tf.convert_to_tensor(
+                [
+                    [
+                        cos_angle + x * x * one_minus_cos,
+                        x * y * one_minus_cos - z * sin_angle,
+                        x * z * one_minus_cos + y * sin_angle,
+                    ],
+                    [
+                        y * x * one_minus_cos + z * sin_angle,
+                        cos_angle + y * y * one_minus_cos,
+                        y * z * one_minus_cos - x * sin_angle,
+                    ],
+                    [
+                        z * x * one_minus_cos - y * sin_angle,
+                        z * y * one_minus_cos + x * sin_angle,
+                        cos_angle + z * z * one_minus_cos,
+                    ],
+                ],
+                dtype=tf.float32,
+            )
+
+            return tf.matmul(sample, rotation_matrix)
+
+        return tf.map_fn(rotate_single_sample, data)
+
+    def temporal_permutation(self, data):
+        """
+        Randomly permute temporal segments of accelerometer data.
+        Divides the 1000 timesteps into n_perm_seg segments and permutes their order.
+        """
+        batch_size = tf.shape(data)[0]
+        timesteps = tf.shape(data)[1]
+        channels = tf.shape(data)[2]
+
+        # Calculate segment length based on n_perm_seg
+        segment_length = timesteps // self.n_perm_seg
+
+        # Reshape into segments: [batch, num_segments, segment_length, channels]
+        num_segments = timesteps // segment_length
+        segments = tf.reshape(
+            data[:, : num_segments * segment_length, :],
+            [batch_size, num_segments, segment_length, channels],
+        )
+
+        # Generate random permutation indices for each sample in batch
+        perm_indices = tf.argsort(tf.random.uniform([batch_size, num_segments]), axis=1)
+
+        # Apply permutation
+        segments_permuted = tf.gather(segments, perm_indices, batch_dims=1)
+
+        # Reshape back to original shape
+        data_permuted = tf.reshape(
+            segments_permuted, [batch_size, num_segments * segment_length, channels]
+        )
+
+        # Concatenate with remainder if any
+        remainder = data[:, num_segments * segment_length :, :]
+        return tf.concat([data_permuted, remainder], axis=1)
+
+    def __call__(self, data):
+        """Apply augmentation pipeline."""
+        data = self.add_noise(data)
+        data = self.bidirectional_flipping(data)
+        data = self.rotate_axis(data)
+        data = self.temporal_permutation(data)
+        return data
+
 
 """
 ## Dataset
@@ -244,7 +484,7 @@ def typing_encoder(M):
 
 
 """
-## Teacher-Student Contrastive Model
+## FOCAL Bimodal Contrastive Model
 """
 
 
@@ -269,34 +509,65 @@ class BimodalContrastiveModel(keras.Model):
         self.tremor_encoder.load_weights("tremor_simclr_embeddings.weights.h5")
         print("✓ Tremor encoder weights loaded successfully")
 
-        # Freeze tremor encoder (teacher)
-        self.tremor_encoder.trainable = False
-        print("✓ Tremor encoder frozen (teacher)")
+        print("Loading pretrained typing encoder weights...")
+        self.typing_encoder.load_weights("typing_simclr_embeddings.weights.h5")
+        print("✓ Typing encoder weights loaded successfully")
 
-        # Projection heads for contrastive learning
-        self.typing_projection = keras.Sequential(
+        # Both encoders trainable for symmetric FOCAL optimization
+        self.tremor_encoder.trainable = True
+        self.typing_encoder.trainable = True
+        print("✓ Both encoders trainable (starting from pretrained weights)")
+
+        # Initialize lightweight augmenters for L_private
+        self.typing_augmenter = LightweightTypingAugmentation()
+        self.tremor_augmenter = LightweightTremorAugmentation()
+
+        # FOCAL-style MLP projectors: Split into shared and private spaces
+        # Shared space projector for typing (for cross-modal consistency)
+        self.typing_shared_projector = keras.Sequential(
             [
                 layers.Dense(2 * M),
                 layers.LeakyReLU(negative_slope=0.2),
-                layers.Dense(M),
+                layers.Dense(M // 2),  # Shared space dimension
             ],
-            name="typing_projection",
+            name="typing_shared_projector",
         )
 
-        self.tremor_projection = keras.Sequential(
+        # Private space projector for typing (for augmentation consistency)
+        self.typing_private_projector = keras.Sequential(
             [
                 layers.Dense(2 * M),
                 layers.LeakyReLU(negative_slope=0.2),
-                layers.Dense(M),
+                layers.Dense(M // 2),  # Private space dimension
             ],
-            name="tremor_projection",
+            name="typing_private_projector",
         )
-        self.tremor_projection.trainable = False
 
-        # Linear probe for classification
+        # Shared space projector for tremor
+        self.tremor_shared_projector = keras.Sequential(
+            [
+                layers.Dense(2 * M),
+                layers.LeakyReLU(negative_slope=0.2),
+                layers.Dense(M // 2),
+            ],
+            name="tremor_shared_projector",
+        )
+
+        # Private space projector for tremor
+        self.tremor_private_projector = keras.Sequential(
+            [
+                layers.Dense(2 * M),
+                layers.LeakyReLU(negative_slope=0.2),
+                layers.Dense(M // 2),
+            ],
+            name="tremor_private_projector",
+        )
+
+        # Linear probe for classification on concatenated embeddings
+        # Input is 2*M because we concatenate typing and tremor embeddings
         self.linear_probe = keras.Sequential(
             [
-                layers.Input(shape=(M,)),
+                layers.Input(shape=(2 * M,)),  # Concatenated: typing + tremor
                 layers.Dropout(0.1),
                 layers.Dense(2, kernel_regularizer=keras.regularizers.L2(1e-4)),
             ],
@@ -305,8 +576,10 @@ class BimodalContrastiveModel(keras.Model):
 
         self.typing_encoder.summary()
         self.tremor_encoder.summary()
-        self.typing_projection.summary()
-        self.tremor_projection.summary()
+        self.typing_shared_projector.summary()
+        self.typing_private_projector.summary()
+        self.tremor_shared_projector.summary()
+        self.tremor_private_projector.summary()
         self.linear_probe.summary()
 
     def compile(self, contrastive_optimizer, probe_optimizer, **kwargs):
@@ -316,7 +589,13 @@ class BimodalContrastiveModel(keras.Model):
 
         self.probe_loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 
-        self.contrastive_loss_tracker = keras.metrics.Mean(name="c_loss")
+        # FOCAL loss component trackers
+        self.shared_loss_tracker = keras.metrics.Mean(name="shared_loss")
+        self.private_loss_tracker = keras.metrics.Mean(name="private_loss")
+        self.orthogonal_loss_tracker = keras.metrics.Mean(name="ortho_loss")
+        self.contrastive_loss_tracker = keras.metrics.Mean(
+            name="c_loss"
+        )  # Total contrastive
         self.contrastive_accuracy = keras.metrics.SparseCategoricalAccuracy(
             name="c_acc"
         )
@@ -327,45 +606,111 @@ class BimodalContrastiveModel(keras.Model):
     @property
     def metrics(self):
         return [
+            self.shared_loss_tracker,
+            self.private_loss_tracker,
+            self.orthogonal_loss_tracker,
             self.contrastive_loss_tracker,
             self.contrastive_accuracy,
             self.probe_loss_tracker,
             self.probe_accuracy,
         ]
 
-    def contrastive_loss(self, projections_1, projections_2):
+    def shared_space_loss(self, h_shared_typing, h_shared_tremor):
         """
-        InfoNCE loss (information noise-contrastive estimation)
-        NT-Xent loss (normalized temperature-scaled cross entropy)
+        L_shared: InfoNCE loss for cross-modal consistency in shared space.
+        Positive pairs: (h_shared_typing[i], h_shared_tremor[i]) - same time, different modality
+        Negative pairs: All other cross-modal pairs in the batch
+        """
+        # L2 normalize
+        h_shared_typing = tf.nn.l2_normalize(h_shared_typing, axis=1)
+        h_shared_tremor = tf.nn.l2_normalize(h_shared_tremor, axis=1)
 
-        projections_1: embeddings from typing encoder (student)
-        projections_2: embeddings from tremor encoder (teacher)
-        """
-        # Cosine similarity: the dot product of the l2-normalized feature vectors
-        projections_1 = tf.nn.l2_normalize(projections_1, axis=1)
-        projections_2 = tf.nn.l2_normalize(projections_2, axis=1)
+        # Compute similarity matrix
         similarities = (
-            ops.matmul(projections_1, ops.transpose(projections_2)) / self.temperature
+            ops.matmul(h_shared_typing, ops.transpose(h_shared_tremor))
+            / self.temperature
         )
 
-        # The similarity between the typing and tremor representations from the
-        # same temporal window should be higher than with other windows
-        batch_size = ops.shape(projections_1)[0]
-        contrastive_labels = ops.arange(batch_size)
-        self.contrastive_accuracy.update_state(contrastive_labels, similarities)
-        self.contrastive_accuracy.update_state(
-            contrastive_labels, ops.transpose(similarities)
+        batch_size = ops.shape(h_shared_typing)[0]
+        labels = ops.arange(batch_size)
+
+        # Symmetric InfoNCE loss
+        loss_typing_to_tremor = keras.losses.sparse_categorical_crossentropy(
+            labels, similarities, from_logits=True
+        )
+        loss_tremor_to_typing = keras.losses.sparse_categorical_crossentropy(
+            labels, ops.transpose(similarities), from_logits=True
         )
 
-        # The temperature-scaled similarities are used as logits for cross-entropy
-        # a symmetrized version of the loss is used here
-        loss_1_2 = keras.losses.sparse_categorical_crossentropy(
-            contrastive_labels, similarities, from_logits=True
+        return (loss_typing_to_tremor + loss_tremor_to_typing) / 2
+
+    def private_space_loss(self, h_private_1, h_private_2):
+        """
+        L_private: NT-Xent loss for augmentation consistency in private space.
+        Positive pairs: (h_private[i], h_private_aug[i]) - same time, same modality, different augmentation
+        Negative pairs: All other samples in the batch (2B - 2 negatives per anchor)
+        """
+        # L2 normalize
+        h_private_1 = tf.nn.l2_normalize(h_private_1, axis=1)
+        h_private_2 = tf.nn.l2_normalize(h_private_2, axis=1)
+
+        batch_size = ops.shape(h_private_1)[0]
+
+        # Compute similarities between augmented versions
+        # Positive similarities: h_private_1[i] · h_private_2[i]
+        positive_sim = (
+            ops.sum(h_private_1 * h_private_2, axis=1, keepdims=True) / self.temperature
         )
-        loss_2_1 = keras.losses.sparse_categorical_crossentropy(
-            contrastive_labels, ops.transpose(similarities), from_logits=True
+
+        # Negative similarities: h_private_1[i] · h_private_1[j] (j ≠ i) and h_private_1[i] · h_private_2[j]
+        neg_sim_1 = (
+            ops.matmul(h_private_1, ops.transpose(h_private_1)) / self.temperature
         )
-        return (loss_1_2 + loss_2_1) / 2
+        neg_sim_2 = (
+            ops.matmul(h_private_1, ops.transpose(h_private_2)) / self.temperature
+        )
+
+        # Mask out diagonal for neg_sim_1 (self-similarity)
+        mask = 1 - tf.eye(batch_size)
+        neg_sim_1 = neg_sim_1 * mask
+
+        # Concatenate all similarities: [positive | negatives_1 | negatives_2]
+        # Shape: [batch_size, 1 + (batch_size - 1) + batch_size]
+        logits = ops.concatenate([positive_sim, neg_sim_1, neg_sim_2], axis=1)
+
+        # Labels are 0 (first position is positive)
+        labels = ops.zeros(batch_size, dtype="int32")
+
+        # Compute cross-entropy loss
+        loss = keras.losses.sparse_categorical_crossentropy(
+            labels, logits, from_logits=True
+        )
+
+        return loss
+
+    def orthogonality_loss(
+        self, h_shared_typing, h_private_typing, h_shared_tremor, h_private_tremor
+    ):
+        """
+        L_orthogonal: Enforce orthogonality between:
+        1. Shared and private of same modality: <h_shared_typing, h_private_typing>
+        2. Private of different modalities: <h_private_typing, h_private_tremor>
+        """
+        # Orthogonality between shared and private of same modality
+        ortho_typing = ops.sum(h_shared_typing * h_private_typing, axis=1)
+        ortho_tremor = ops.sum(h_shared_tremor * h_private_tremor, axis=1)
+
+        # Orthogonality between private spaces of different modalities
+        ortho_cross = ops.sum(h_private_typing * h_private_tremor, axis=1)
+
+        # Sum of absolute cosine similarities (want them to be 0)
+        loss = (
+            ops.mean(ops.abs(ortho_typing))
+            + ops.mean(ops.abs(ortho_tremor))
+            + ops.mean(ops.abs(ortho_cross))
+        )
+
+        return loss
 
     def train_step(self, data):
         # Unpack unlabeled and labeled data
@@ -375,53 +720,112 @@ class BimodalContrastiveModel(keras.Model):
         typing_data, accel_data = unlabeled_data
         (labeled_typing, labeled_accel), labels = labeled_data
 
-        # Contrastive learning step
+        # FOCAL contrastive learning step
         with tf.GradientTape() as tape:
-            # Get embeddings from student (typing) encoder
+            # === Original embeddings (for shared space) ===
             typing_embeddings = self.typing_encoder(typing_data, training=True)
-            typing_projections = self.typing_projection(
+            tremor_embeddings = self.tremor_encoder(accel_data, training=True)
+
+            # Project to shared space (both projectors trainable)
+            h_shared_typing = self.typing_shared_projector(
                 typing_embeddings, training=True
             )
-
-            # Get embeddings from teacher (tremor) encoder (no gradients computed)
-            tremor_embeddings = self.tremor_encoder(accel_data, training=False)
-            tremor_projections = self.tremor_projection(
-                tremor_embeddings, training=False
+            h_shared_tremor = self.tremor_shared_projector(
+                tremor_embeddings, training=True  # Changed to True
             )
 
-            # Compute contrastive loss on projections
-            contrastive_loss = self.contrastive_loss(
-                typing_projections, tremor_projections
+            # === Augmented embeddings (for private space) ===
+            # Use lightweight versions of typing and tremor augmentations
+            typing_aug = self.typing_augmenter(typing_data)
+            accel_aug = self.tremor_augmenter(accel_data)
+
+            typing_embeddings_aug = self.typing_encoder(typing_aug, training=True)
+            tremor_embeddings_aug = self.tremor_encoder(accel_aug, training=True)
+
+            # Project to private space (original and augmented)
+            h_private_typing = self.typing_private_projector(
+                typing_embeddings, training=True
+            )
+            h_private_typing_aug = self.typing_private_projector(
+                typing_embeddings_aug, training=True
             )
 
-        # Compute gradients for typing encoder and its projection head
+            h_private_tremor = self.tremor_private_projector(
+                tremor_embeddings, training=True  # Changed to True
+            )
+            h_private_tremor_aug = self.tremor_private_projector(
+                tremor_embeddings_aug, training=True  # Changed to True
+            )
+
+            # === Compute FOCAL losses ===
+            # L_shared: Cross-modal consistency in shared space
+            loss_shared = self.shared_space_loss(h_shared_typing, h_shared_tremor)
+
+            # L_private: Augmentation consistency in private space (per modality)
+            loss_private_typing = self.private_space_loss(
+                h_private_typing, h_private_typing_aug
+            )
+            loss_private_tremor = self.private_space_loss(
+                h_private_tremor, h_private_tremor_aug
+            )
+            loss_private = (loss_private_typing + loss_private_tremor) / 2
+
+            # L_orthogonal: Enforce orthogonality constraints
+            loss_orthogonal = self.orthogonality_loss(
+                h_shared_typing, h_private_typing, h_shared_tremor, h_private_tremor
+            )
+
+            # Total contrastive loss
+            contrastive_loss = (
+                lambda_shared * loss_shared
+                + lambda_private * loss_private
+                + lambda_orthogonal * loss_orthogonal
+            )
+
+        # Compute gradients for both encoders and all projectors
         trainable_weights = (
             self.typing_encoder.trainable_weights
-            + self.typing_projection.trainable_weights
+            + self.tremor_encoder.trainable_weights
+            + self.typing_shared_projector.trainable_weights
+            + self.typing_private_projector.trainable_weights
+            + self.tremor_shared_projector.trainable_weights
+            + self.tremor_private_projector.trainable_weights
         )
         gradients = tape.gradient(contrastive_loss, trainable_weights)
         self.contrastive_optimizer.apply_gradients(zip(gradients, trainable_weights))
 
-        # Update contrastive metrics
+        # Update FOCAL metrics
+        self.shared_loss_tracker.update_state(loss_shared)
+        self.private_loss_tracker.update_state(loss_private)
+        self.orthogonal_loss_tracker.update_state(loss_orthogonal)
         self.contrastive_loss_tracker.update_state(contrastive_loss)
+
+        # Update contrastive accuracy (based on shared space cross-modal similarity)
         self.contrastive_accuracy.update_state(
-            tf.range(tf.shape(typing_projections)[0]),
+            tf.range(tf.shape(h_shared_typing)[0]),
             tf.matmul(
-                tf.nn.l2_normalize(typing_projections, axis=1),
-                tf.nn.l2_normalize(tremor_projections, axis=1),
+                tf.nn.l2_normalize(h_shared_typing, axis=1),
+                tf.nn.l2_normalize(h_shared_tremor, axis=1),
                 transpose_b=True,
             )
             / self.temperature,
         )
 
-        # Linear probe step
+        # Linear probe step with fusion of both modalities
         with tf.GradientTape() as tape:
-            # Encode labeled data (typing encoder in inference mode)
+            # Encode labeled data from both modalities (both in inference mode)
             labeled_typing_embeddings = self.typing_encoder(
                 labeled_typing, training=False
             )
-            # Classify
-            class_logits = self.linear_probe(labeled_typing_embeddings, training=True)
+            labeled_tremor_embeddings = self.tremor_encoder(
+                labeled_accel, training=False
+            )
+            # Concatenate embeddings from both modalities
+            fused_embeddings = tf.concat(
+                [labeled_typing_embeddings, labeled_tremor_embeddings], axis=1
+            )
+            # Classify on fused representation
+            class_logits = self.linear_probe(fused_embeddings, training=True)
             probe_loss = self.probe_loss(labels, class_logits)
 
         # Update only linear probe weights
@@ -440,17 +844,26 @@ class BimodalContrastiveModel(keras.Model):
         # Unpack labeled test data
         (labeled_typing, labeled_accel), labels = data
 
-        # Encode and classify (inference mode)
+        # Encode from both modalities (inference mode)
         labeled_typing_embeddings = self.typing_encoder(labeled_typing, training=False)
-        class_logits = self.linear_probe(labeled_typing_embeddings, training=False)
+        labeled_tremor_embeddings = self.tremor_encoder(labeled_accel, training=False)
+        # Concatenate embeddings
+        fused_embeddings = tf.concat(
+            [labeled_typing_embeddings, labeled_tremor_embeddings], axis=1
+        )
+        # Classify on fused representation
+        class_logits = self.linear_probe(fused_embeddings, training=False)
         probe_loss = self.probe_loss(labels, class_logits)
 
-        # Update probe metrics
+        # Update only probe metrics
         self.probe_loss_tracker.update_state(probe_loss)
         self.probe_accuracy.update_state(labels, class_logits)
 
-        # Only return probe metrics for test
-        return {m.name: m.result() for m in self.metrics[2:]}
+        # Return only probe metrics (don't include contrastive metrics at all)
+        return {
+            self.probe_loss_tracker.name: self.probe_loss_tracker.result(),
+            self.probe_accuracy.name: self.probe_accuracy.result(),
+        }
 
     def plot_contrastive_loss(self, pretraining_history):
         """
@@ -462,7 +875,7 @@ class BimodalContrastiveModel(keras.Model):
             label="Contrastive Loss",
             color="blue",
         )
-        plt.title("Teacher-Student Contrastive Loss per Epoch")
+        plt.title("FOCAL Contrastive Loss per Epoch")
         plt.xlabel("Epochs")
         plt.ylabel("Loss")
         plt.legend()
@@ -491,7 +904,7 @@ class BimodalContrastiveModel(keras.Model):
             label="Contrastive Accuracy",
             color="green",
         )
-        plt.title("Teacher-Student Contrastive Accuracy per Epoch")
+        plt.title("FOCAL Contrastive Accuracy per Epoch")
         plt.xlabel("Epochs")
         plt.ylabel("Accuracy")
         plt.legend()
@@ -517,7 +930,7 @@ class BimodalContrastiveModel(keras.Model):
 
 # Initialize model
 print("\n" + "=" * 80)
-print("INITIALIZING BIMODAL TEACHER-STUDENT MODEL")
+print("INITIALIZING BIMODAL FOCAL MODEL")
 print("=" * 80)
 pretraining_model = BimodalContrastiveModel()
 pretraining_model.compile(
@@ -528,7 +941,7 @@ pretraining_model.compile(
 # Callbacks
 checkpoint = callbacks.ModelCheckpoint(
     filepath="typing_bimodal_best_model.weights.h5",
-    monitor="val_p_loss",
+    monitor="val_p_loss",  # Changed from c_loss - care about downstream task
     mode="min",
     save_best_only=True,
     save_weights_only=True,
@@ -542,7 +955,7 @@ def lr_schedule(epoch, lr):
     if epoch == 0:
         return learning_rate
     elif epoch >= decay_start_epoch:
-        return lr * 0.99
+        return lr * 1.0
     return lr
 
 
@@ -550,7 +963,7 @@ lr_scheduler = callbacks.LearningRateScheduler(lr_schedule)
 
 # Train the model
 print("\n" + "=" * 80)
-print("STARTING TEACHER-STUDENT TRAINING")
+print("STARTING FOCAL BIMODAL TRAINING")
 print("=" * 80)
 pretraining_history = pretraining_model.fit(
     train_dataset,
@@ -588,35 +1001,45 @@ pretraining_model.plot_contrastive_accuracy(pretraining_history)
 
 def get_labeled_embeddings(pretraining_model, labeled_dataset):
     """
-    Generate embeddings for labeled data using the trained typing encoder.
+    Generate fused embeddings (typing + tremor) for labeled data.
+    This matches what the linear probe sees during training.
     """
-    typing_features = []
+    fused_features = []
     labels = []
 
     # Iterate through the batched dataset and collect features and labels
     for batch in labeled_dataset:
         typing_batch = batch[0][0]  # Extract the typing features from the batch
+        accel_batch = batch[0][1]  # Extract the accelerometer features from the batch
         labels_batch = batch[1]  # Extract the labels from the batch
 
-        # Predict the embeddings for the entire batch of typing features
-        embeddings_batch = pretraining_model.typing_encoder.predict(
+        # Get embeddings from both encoders
+        typing_embeddings = pretraining_model.typing_encoder.predict(
             typing_batch, verbose=0
         )
+        tremor_embeddings = pretraining_model.tremor_encoder.predict(
+            accel_batch, verbose=0
+        )
 
-        # Append the embeddings and labels to the lists
-        typing_features.append(embeddings_batch)
+        # Concatenate embeddings (same as what linear probe uses)
+        fused_embeddings = np.concatenate(
+            [typing_embeddings, tremor_embeddings], axis=1
+        )
+
+        # Append the fused embeddings and labels to the lists
+        fused_features.append(fused_embeddings)
         labels.append(labels_batch.numpy())  # Convert TensorFlow tensor to numpy array
 
     # Stack the results to form a full matrix
-    embeddings = np.vstack(typing_features)  # Convert list of arrays into a full array
+    embeddings = np.vstack(fused_features)  # Convert list of arrays into a full array
     labels = np.hstack(labels)  # Flatten list of label arrays into a single array
 
-    print(f"Embeddings shape: {embeddings.shape}")
+    print(f"Fused embeddings shape: {embeddings.shape}")
     return embeddings, labels
 
 
 def visualize_embeddings(
-    embeddings, labels, n_components=2, perplexity=10, learning_rate="auto", n_iter=250
+    embeddings, labels, n_components=2, perplexity=10, learning_rate="auto", n_iter=500
 ):
     """
     Visualize the embeddings using t-SNE, colored by their class labels.
