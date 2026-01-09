@@ -57,11 +57,12 @@ else:
 
 dataset_size = 10240
 M = 64
-batch_size = 1024
-labeled_batch_size = 8
+batch_size = 256
+labeled_batch_size = 2
 num_epochs = 500
-temperature = 0.07
-learning_rate = 5e-4
+temperature = 0.01
+learning_rate = 1e-3
+probe_learning_rate = 2e-4
 
 # FOCAL hyperparameters (based on FOCAL paper)
 lambda_shared = 1.0  # Main cross-modal alignment objective
@@ -426,39 +427,27 @@ train_dataset = tf.data.Dataset.zip((dataset, labeled_train_dataset)).prefetch(
 """
 
 
-# Tremor encoder (teacher) - matches the architecture from tremorSimCLRlabeled.py
+# Simple accel encoder - symmetric with typing encoder
 def tremor_encoder(M):
     return keras.Sequential(
         [
-            # Layer 1
-            layers.ZeroPadding1D(padding=1),
-            layers.Conv1D(filters=32, kernel_size=8, padding="valid"),
-            layers.BatchNormalization(),
+            # Conv layers to extract temporal patterns
+            layers.Conv1D(filters=32, kernel_size=16, padding="same"),
             layers.LeakyReLU(negative_slope=0.2),
-            layers.MaxPooling1D(pool_size=2),
-            # Layer 2
-            layers.ZeroPadding1D(padding=1),
-            layers.Conv1D(filters=32, kernel_size=8, padding="valid"),
-            layers.BatchNormalization(),
+            layers.MaxPooling1D(pool_size=4),  # 1000 -> 250
+            layers.Conv1D(filters=16, kernel_size=8, padding="same"),
             layers.LeakyReLU(negative_slope=0.2),
-            layers.MaxPooling1D(pool_size=2),
-            # Layer 3
-            layers.ZeroPadding1D(padding=1),
-            layers.Conv1D(filters=16, kernel_size=16, padding="valid"),
-            layers.BatchNormalization(),
+            layers.GlobalAveragePooling1D(),
+            # Dense layers matching typing encoder
+            layers.Dense(100),
             layers.LeakyReLU(negative_slope=0.2),
-            layers.MaxPooling1D(pool_size=2),
-            # Layer 4
-            layers.ZeroPadding1D(padding=1),
-            layers.Conv1D(filters=16, kernel_size=16, padding="valid"),
-            layers.BatchNormalization(),
+            layers.Dropout(0.1),
+            layers.Dense(50),
             layers.LeakyReLU(negative_slope=0.2),
-            layers.MaxPooling1D(pool_size=2),
-            # Flatten and Dense layer to get M-dimensional output
-            layers.Flatten(),
+            layers.Dropout(0.1),
             layers.Dense(M),
         ],
-        name="tremor_encoder",
+        name="accel_encoder",
     )
 
 
@@ -494,29 +483,17 @@ class BimodalContrastiveModel(keras.Model):
 
         self.temperature = temperature
 
-        # Student encoder (trainable)
+        # Both encoders for typing data (student-student symmetric setup)
         self.typing_encoder = typing_encoder(M)
-
-        # Teacher encoder (frozen)
         self.tremor_encoder = tremor_encoder(M)
 
         # Build the tremor encoder by passing a dummy input
         dummy_accel_input = tf.zeros((1, 1000, 3))
         _ = self.tremor_encoder(dummy_accel_input)
 
-        # Load pretrained weights for tremor encoder
-        print("Loading pretrained tremor encoder weights...")
-        self.tremor_encoder.load_weights("tremor_simclr_embeddings.weights.h5")
-        print("✓ Tremor encoder weights loaded successfully")
-
-        print("Loading pretrained typing encoder weights...")
-        self.typing_encoder.load_weights("typing_simclr_embeddings.weights.h5")
-        print("✓ Typing encoder weights loaded successfully")
-
-        # Both encoders trainable for symmetric FOCAL optimization
+        # Both encoders trainable with random initialization
         self.tremor_encoder.trainable = True
         self.typing_encoder.trainable = True
-        print("✓ Both encoders trainable (starting from pretrained weights)")
 
         # Initialize lightweight augmenters for L_private
         self.typing_augmenter = LightweightTypingAugmentation()
@@ -935,7 +912,7 @@ print("=" * 80)
 pretraining_model = BimodalContrastiveModel()
 pretraining_model.compile(
     contrastive_optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
-    probe_optimizer=keras.optimizers.Adam(learning_rate=5e-4),
+    probe_optimizer=keras.optimizers.Adam(learning_rate=probe_learning_rate),
 )
 
 # Callbacks

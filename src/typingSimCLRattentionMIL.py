@@ -29,7 +29,7 @@ from sklearn.metrics import confusion_matrix
 DEFAULT_K2 = 500
 DEFAULT_PRETRAIN_NUM_EPOCHS = 100
 DEFAULT_NUM_EPOCHS = 50
-DEFAULT_BATCH_SIZE = 8
+DEFAULT_BATCH_SIZE = 4
 DEFAULT_M = 64
 
 
@@ -76,7 +76,7 @@ def setup_environment():
 
 # === MODE SELECTION ===
 # Default MODE - can be overridden when importing
-MODE = "simclr"  # "baseline", "simclr", "federated"
+MODE = "baseline"  # "baseline", "simclr", "federated"
 
 
 class MILAttentionLayer(layers.Layer):
@@ -476,15 +476,40 @@ def predict(dataset, trained_model):
     return predictions
 
 
-def loso_evaluate(data, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_SIZE):
-    # Extract the bags and labels
+def loso_evaluate(
+    data,
+    input_shape=None,
+    M=DEFAULT_M,
+    batch_size=DEFAULT_BATCH_SIZE,
+    additional_data=None,
+    eval_subject_ids=None,
+):
+    # Extract the bags and labels from primary dataset
     bags = data["X"].tolist()
     y = data["y"].tolist()
+    subject_ids = data["subject_id"].tolist()
 
     # Set default input shape if not provided
     if input_shape is None:
         K2, B = np.array(data["X"])[0].shape
         input_shape = (K2, B)
+
+    # Filter to only use common subjects if specified
+    if eval_subject_ids is not None:
+        eval_indices = [
+            i for i, sid in enumerate(subject_ids) if sid in eval_subject_ids
+        ]
+        bags = [bags[i] for i in eval_indices]
+        y = [y[i] for i in eval_indices]
+        print(f"Evaluating on {len(bags)} common subjects (tremor+typing)")
+
+    # Extract additional data if provided (for training augmentation)
+    additional_bags = []
+    additional_labels = []
+    if additional_data is not None:
+        additional_bags = additional_data["X"].tolist()
+        additional_labels = additional_data["y"].tolist()
+        print(f"Using additional {len(additional_bags)} subjects for training")
 
     # Initialize LeaveOneOut
     loo = LeaveOneOut()
@@ -502,6 +527,11 @@ def loso_evaluate(data, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_
         train_labels = [y[i] for i in train_index]
         val_bag = [bags[i] for i in test_index]
         val_label = [y[i] for i in test_index]
+
+        # Add all additional subjects to training set
+        if additional_data is not None:
+            train_bags.extend(additional_bags)
+            train_labels.extend(additional_labels)
 
         train_data = np.array(train_bags)
         train_labels = np.array([np.array([label]) for label in train_labels])

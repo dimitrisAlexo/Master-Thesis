@@ -270,7 +270,7 @@ def run_multiple_tremor_loso_experiments(
 def run_multiple_typing_experiments(
     sdataset,
     repetitions=10,
-    save_path="../results/500_results_typing_pretrained.json",
+    save_path="../results/extra_500_results_typing_baseline.json",
     restart_interval=1,
 ):
     """
@@ -339,12 +339,23 @@ def run_multiple_typing_experiments(
             return np.nan, np.nan
         return np.nanmean(values), np.nanstd(values)
 
+    # Load additional dataset (if available) for training augmentation
+    additional_dataset = load_additional_typing_dataset()
+
+    # Get common subject IDs for LOSO evaluation (subjects in both tremor and typing)
+    common_subject_ids = get_common_subject_ids()
+
     # Run the experiment for this session
     for i in range(start_iteration, end_iteration):
         print(f"\033[91mRepetition {i + 1}/{repetitions}\033[0m")
         try:
-            # Perform the loso evaluation
-            _, _, _, results = loso_evaluate(sdataset)
+            # Perform the loso evaluation with additional dataset for training
+            # Only evaluate on common subjects (tremor + typing), train on rest
+            _, _, _, results = loso_evaluate(
+                sdataset,
+                additional_data=additional_dataset,
+                eval_subject_ids=common_subject_ids,
+            )
 
             # Append results to lists
             accuracy_list.append(results["final_accuracy"])
@@ -425,6 +436,38 @@ def load_typing_dataset():
     except FileNotFoundError:
         print(
             "typing_sdataset.pickle not found. Please run the dataset creation first."
+        )
+        return None
+
+
+def load_additional_typing_dataset():
+    """Load the additional typing supervised dataset"""
+    try:
+        with open("../data/additional_typing_sdataset.pickle", "rb") as f:
+            print("Loading additional typing sdataset...")
+            additional_sdataset = pkl.load(f)
+        print(f"Additional dataset: {len(additional_sdataset)} subjects")
+        print(f"windows shape: {additional_sdataset['X'][0].shape}")
+        return additional_sdataset
+    except FileNotFoundError:
+        print(
+            "additional_typing_sdataset.pickle not found. Training without additional data."
+        )
+        return None
+
+
+def get_common_subject_ids():
+    """Get subject IDs that are common between tremor and typing datasets (fusion subjects)"""
+    try:
+        with open("fusion_dataset.pickle", "rb") as f:
+            print("Loading fusion dataset to identify common subjects...")
+            fusion_df = pkl.load(f)
+        common_ids = set(fusion_df["subject_id"].tolist())
+        print(f"Common subjects (tremor + typing): {len(common_ids)}")
+        return common_ids
+    except FileNotFoundError:
+        print(
+            "fusion_dataset.pickle not found. Using all typing subjects for evaluation."
         )
         return None
 

@@ -69,7 +69,7 @@ print("Using mixed precision...")
 
 
 # === FUSION MODEL PARAMETERS ===
-MODE = "simclr"
+MODE = "baseline"
 assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
 print(f"Using MODE: {MODE}")
 print(
@@ -132,12 +132,28 @@ def load_tremor_dataset():
 
 
 def load_typing_dataset():
-    """Load typing dataset from pickle file"""
-    print("Loading typing dataset...")
+    """Load typing dataset from pickle files (both original and additional)"""
+    print("Loading typing datasets...")
+
+    # Load original typing dataset
     with open("typing_sdataset.pickle", "rb") as f:
         typing_dataset = pkl.load(f)
-    # print(f"Typing dataset loaded: {typing_dataset}")
-    return typing_dataset
+    print(f"  Loaded typing_sdataset.pickle: {len(typing_dataset)} subjects")
+
+    # Load additional typing dataset
+    with open("../data/additional_typing_sdataset.pickle", "rb") as f:
+        additional_typing_dataset = pkl.load(f)
+    print(
+        f"  Loaded additional_typing_sdataset.pickle: {len(additional_typing_dataset)} subjects"
+    )
+
+    # Combine both datasets
+    combined_dataset = pd.concat(
+        [typing_dataset, additional_typing_dataset], ignore_index=True
+    )
+    print(f"  Combined dataset: {len(combined_dataset)} subjects")
+
+    return combined_dataset
 
 
 def pretrain_tremor_branch(subject_exclude_id=None):
@@ -755,7 +771,7 @@ def fusion_loso_evaluate(endtask_df):
 def run_multiple_fusion_experiments(
     endtask_df,
     repetitions=10,
-    save_path="../results/200_500_results_fusion_bimodal.json",
+    save_path="../results/extra_200_500_results_fusion_baseline.json",
     restart_interval=1,
 ):
     """
