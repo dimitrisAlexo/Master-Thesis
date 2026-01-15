@@ -270,7 +270,7 @@ def run_multiple_tremor_loso_experiments(
 def run_multiple_typing_experiments(
     sdataset,
     repetitions=10,
-    save_path="../results/extra_500_results_typing_baseline.json",
+    save_path="../results/extra_200_results_typing_pretrained.json",
     restart_interval=1,
 ):
     """

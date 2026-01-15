@@ -69,7 +69,7 @@ print("Using mixed precision...")
 
 
 # === FUSION MODEL PARAMETERS ===
-MODE = "baseline"
+MODE = "simclr"
 assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
 print(f"Using MODE: {MODE}")
 print(
@@ -122,6 +122,18 @@ FUSION_NUM_EPOCHS = 100
 FUSION_BATCH_SIZE = 4  # Paper specifies batch size of 8
 
 
+def tremor_accuracy(y_true, y_pred):
+    return tf.keras.metrics.binary_accuracy(y_true[:, 0:1], y_pred[:, 0:1])
+
+
+def fmi_accuracy(y_true, y_pred):
+    return tf.keras.metrics.binary_accuracy(y_true[:, 1:2], y_pred[:, 1:2])
+
+
+def pd_accuracy(y_true, y_pred):
+    return tf.keras.metrics.binary_accuracy(y_true[:, 2:3], y_pred[:, 2:3])
+
+
 def load_tremor_dataset():
     """Load tremor dataset from pickle file"""
     print("Loading tremor dataset...")
@@ -131,14 +143,34 @@ def load_tremor_dataset():
     return tremor_dataset
 
 
-def load_typing_dataset():
-    """Load typing dataset from pickle files (both original and additional)"""
+def load_typing_dataset(common_subjects_only=False):
+    """Load typing dataset from pickle files (both original and additional)
+
+    Args:
+        common_subjects_only: If True, only load subjects that exist in fusion dataset
+                            (common between tremor and typing)
+    """
     print("Loading typing datasets...")
 
     # Load original typing dataset
     with open("typing_sdataset.pickle", "rb") as f:
         typing_dataset = pkl.load(f)
     print(f"  Loaded typing_sdataset.pickle: {len(typing_dataset)} subjects")
+
+    # Filter to only common subjects if requested (for fusion pretraining)
+    if common_subjects_only:
+        try:
+            with open("fusion_dataset.pickle", "rb") as f:
+                fusion_df = pkl.load(f)
+            common_ids = set(fusion_df["subject_id"].tolist())
+            typing_dataset = typing_dataset[
+                typing_dataset["subject_id"].isin(common_ids)
+            ]
+            print(
+                f"  Filtered to {len(typing_dataset)} common subjects (tremor+typing)"
+            )
+        except FileNotFoundError:
+            print("  Warning: fusion_dataset.pickle not found, using all subjects")
 
     # Load additional typing dataset
     with open("../data/additional_typing_sdataset.pickle", "rb") as f:
@@ -248,8 +280,8 @@ def pretrain_typing_branch(subject_exclude_id=None):
         print("PRETRAINING TYPING BRANCH")
     print("=" * 50)
 
-    # Load typing dataset
-    typing_dataset = load_typing_dataset()
+    # Load typing dataset (only common subjects for fusion)
+    typing_dataset = load_typing_dataset(common_subjects_only=True)
 
     # Exclude subject if specified
     if subject_exclude_id is not None:
@@ -530,6 +562,16 @@ class FusionModel(keras.Model):
 
         print("Pretrained layers frozen")
 
+    def unfreeze_pretrained_layers(self):
+        """Unfreeze the pretrained embedding and attention layers for fine-tuning"""
+        self.tremor_branch.embeddings_network.trainable = True
+        self.tremor_branch.attention_layer.trainable = True
+
+        self.typing_branch.embeddings_network.trainable = True
+        self.typing_branch.attention_layer.trainable = True
+
+        print("Pretrained layers unfrozen for fine-tuning")
+
     def get_bag_embeddings(self, tremor_input, typing_input):
         """Get bag-level embeddings from both branches"""
         # Get tremor bag embedding
@@ -566,10 +608,13 @@ class FusionModel(keras.Model):
         tremor_embedding, typing_embedding = self.get_bag_embeddings(
             tremor_input, typing_input
         )
-        fused_embedding = layers.Add()([tremor_embedding, typing_embedding])
+        # L2 normalize embeddings to ensure equal contribution from both modalities
+        tremor_embedding_norm = tf.nn.l2_normalize(tremor_embedding, axis=-1)
+        typing_embedding_norm = tf.nn.l2_normalize(typing_embedding, axis=-1)
+        fused_embedding = layers.Add()([tremor_embedding_norm, typing_embedding_norm])
         return self.multilabel_classifier(fused_embedding)
 
-    def compute_loss(self, x, y, y_pred, sample_weight=None):
+    def compute_loss(self, x=None, y=None, y_pred=None, sample_weight=None):
         """
         Custom loss function as per paper: Ltotal = Ltremor + Lfmi + Lpd
         where Li = -yi * log(p(yi|X1,X2)) for i in {tremor, fmi, pd}
@@ -683,19 +728,19 @@ def fusion_loso_evaluate(endtask_df):
             mode=MODE,
         )
 
+        # Train fusion model
+        print("Training fusion model...")
+
         # Compile model for multi-label classification
-        # Paper specifies reduced learning rate of 0.0005 for fusion finetuning
-        # Using custom loss that sums three separate binary cross-entropy losses
         fusion_model.compile(
             optimizer=optimizers.Adam(learning_rate=5e-4),  # 0.0005 as per paper
-            loss=fusion_model.compute_loss,  # Custom loss: Ltotal = Ltremor + Lfmi + Lpd
-            metrics=["accuracy"],
+            loss=fusion_model.compute_loss,
+            metrics=["binary_accuracy", tremor_accuracy, fmi_accuracy, pd_accuracy],
         )
 
-        # Train the fusion model (only the classifier part)
-        print("Training fusion model...")
-        fusion_epochs = int(os.getenv("FUSION_EPOCHS", FUSION_NUM_EPOCHS))
-        history = fusion_model.fit(train_dataset, epochs=fusion_epochs, verbose=1)
+        # Train the model
+        num_epochs = int(os.getenv("FUSION_EPOCHS", FUSION_NUM_EPOCHS))
+        history = fusion_model.fit(train_dataset, epochs=num_epochs, verbose=1)
 
         # Evaluate on test subject
         print("Evaluating on test subject...")
@@ -771,7 +816,7 @@ def fusion_loso_evaluate(endtask_df):
 def run_multiple_fusion_experiments(
     endtask_df,
     repetitions=10,
-    save_path="../results/extra_200_500_results_fusion_baseline.json",
+    save_path="../results/extra_200_200_results_fusion_pretrained.json",
     restart_interval=1,
 ):
     """
@@ -987,7 +1032,7 @@ def run_fusion_experiment(repetitions=1):
 if __name__ == "__main__":
     # Choose what to run
     run_fusion_phase = True  # Set to True to run fusion experiment
-    fusion_repetitions = 10  # Number of LOSO repetitions to run
+    fusion_repetitions = 20  # Number of LOSO repetitions to run
 
     if run_fusion_phase:
         print("Running fusion phase...")

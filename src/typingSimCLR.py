@@ -44,10 +44,11 @@ if tf.config.list_physical_devices("GPU"):
 else:
     print("Using CPU...")
 
-# Mixed precision policy
-policy = mixed_precision.Policy("mixed_float16")
-mixed_precision.set_global_policy(policy)
-print("Using mixed precision...")
+# Mixed precision policy - disabled for SimCLR due to numerical instability with projection head
+# policy = mixed_precision.Policy("mixed_float16")
+# mixed_precision.set_global_policy(policy)
+# print("Using mixed precision...")
+print("Using float32 for numerical stability...")
 
 """
 ## Hyperparameter setup
@@ -57,10 +58,10 @@ unlabeled_dataset_size = 10240
 labeled_dataset_size = 100
 
 M = 64
-K2 = 500
+K2 = 200
 batch_size = 512
 labeled_batch_size = 4
-num_epochs = 150
+num_epochs = 250
 temperature = 0.01
 learning_rate = 0.001
 
@@ -127,9 +128,9 @@ labeled_gdataset_test = (
 class TypingAugmentation:
     def __init__(
         self,
-        noise_factor=0.015,  # 0.01
+        noise_factor=0.01,  # 0.01
         dropout_rate=0.01,  # 0.01
-        n_perm_seg=8,
+        n_perm_seg=20,
         scale_range=(0.85, 1.15),  # Random scaling range
         max_shift_hold=2,  # Max bin shift (in bins) for hold time
         max_shift_flight=3,  # Max bin shift for flight time
@@ -503,6 +504,10 @@ class ContrastiveModel(keras.Model):
         # InfoNCE loss (information noise-contrastive estimation)
         # NT-Xent loss (normalized temperature-scaled cross entropy)
 
+        # Ensure float32 for numerical stability
+        projections_1 = tf.cast(projections_1, tf.float32)
+        projections_2 = tf.cast(projections_2, tf.float32)
+
         # Cosine similarity: the dot product of the l2-normalized feature vectors
         projections_1 = tf.nn.l2_normalize(projections_1, axis=1)
         projections_2 = tf.nn.l2_normalize(projections_2, axis=1)
@@ -539,34 +544,33 @@ class ContrastiveModel(keras.Model):
             embeddings_1 = self.encoder(augmented_histograms_1, training=True)
             embeddings_2 = self.encoder(augmented_histograms_2, training=True)
 
-            # Compute contrastive loss
-            contrastive_loss = self.contrastive_loss(embeddings_1, embeddings_2)
+            # Pass through projection head for contrastive learning
+            projections_1 = self.projection_head(embeddings_1, training=True)
+            projections_2 = self.projection_head(embeddings_2, training=True)
 
-        # Compute gradients of the contrastive loss and update the encoder
-        gradients = tape.gradient(
-            contrastive_loss,
-            self.encoder.trainable_weights,
+            # Compute contrastive loss on projections
+            contrastive_loss = self.contrastive_loss(projections_1, projections_2)
+
+        # Compute gradients of the contrastive loss and update encoder + projection head
+        trainable_weights = (
+            self.encoder.trainable_weights + self.projection_head.trainable_weights
         )
-        self.contrastive_optimizer.apply_gradients(
-            zip(
-                gradients,
-                self.encoder.trainable_weights,
-            )
-        )
+        gradients = tape.gradient(contrastive_loss, trainable_weights)
+        self.contrastive_optimizer.apply_gradients(zip(gradients, trainable_weights))
 
         # Update the contrastive loss tracker
         self.contrastive_loss_tracker.update_state(contrastive_loss)
 
         # Compute accuracy (how often the correct positive pair has highest similarity)
-        projections_1_normalized = tf.nn.l2_normalize(embeddings_1, axis=1)
-        projections_2_normalized = tf.nn.l2_normalize(embeddings_2, axis=1)
+        projections_1_normalized = tf.nn.l2_normalize(projections_1, axis=1)
+        projections_2_normalized = tf.nn.l2_normalize(projections_2, axis=1)
         similarities = (
             ops.matmul(
                 projections_1_normalized, ops.transpose(projections_2_normalized)
             )
             / self.temperature
         )
-        batch_size = tf.shape(embeddings_1)[0]
+        batch_size = tf.shape(projections_1)[0]
         contrastive_labels = tf.range(batch_size)
         self.contrastive_accuracy.update_state(contrastive_labels, similarities)
 
@@ -674,7 +678,7 @@ def lr_schedule(epoch, lr):
     if epoch == 0:  # For the first epoch, keep the initial learning rate
         return learning_rate
     elif epoch >= decay_start_epoch:
-        return lr * 0.99  # Decay logic
+        return lr * 1.0  # Decay logic
     return lr
 
 
