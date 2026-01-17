@@ -747,7 +747,7 @@ def fusion_loso_evaluate(endtask_df):
         test_predictions = fusion_model.predict(test_dataset)
 
         # Convert predictions to binary (threshold 0.5)
-        test_predictions_binary = (test_predictions > 0.55).astype(int)
+        test_predictions_binary = (test_predictions > 0.5).astype(int)
 
         all_predictions.extend(test_predictions_binary)
         all_true_labels.extend(test_labels_array)
