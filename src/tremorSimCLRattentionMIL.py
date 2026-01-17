@@ -496,16 +496,29 @@ def predict(dataset, trained_model):
     return predictions
 
 
-def loso_evaluate(data, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_SIZE):
-    # Extract the bags and labels
-    bags = data["X"].tolist()
-    y_train = data["y_train"].tolist()
-    y_test = data["y_test"].tolist()
+def loso_evaluate(data, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_SIZE, eval_subject_ids=None):
+    # Extract the bags and labels from primary dataset
+    all_bags = data["X"].tolist()
+    all_y_train = data["y_train"].tolist()
+    all_y_test = data["y_test"].tolist()
+    all_subject_ids = data["subject_id"].tolist()
 
     # Set default input shape if not provided
     if input_shape is None:
         Kt, Ws, C = np.array(data["X"])[0].shape
         input_shape = (Kt, Ws, C)
+
+    # Determine evaluation subjects (either all or only common subjects)
+    if eval_subject_ids is not None:
+        # Get indices of common subjects for evaluation only
+        eval_indices = [
+            i for i, sid in enumerate(all_subject_ids) if sid in eval_subject_ids
+        ]
+        print(f"Evaluating on {len(eval_indices)} common subjects (tremor+typing)")
+        print(f"Training on all {len(all_bags)} subjects (minus test subject each fold)")
+    else:
+        # Use all subjects for evaluation
+        eval_indices = list(range(len(all_bags)))
 
     # Initialize LeaveOneOut
     loo = LeaveOneOut()
@@ -517,17 +530,25 @@ def loso_evaluate(data, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_
     all_predicted_probs = []
 
     fold_counter = 0
-    total_folds = len(bags)  # Total number of subjects for LOSO
+    total_folds = len(eval_indices)  # Total number of subjects for LOSO
 
-    for train_index, test_index in loo.split(bags):
+    for _, test_idx_in_eval in loo.split(eval_indices):
         fold_counter += 1
         print(f"\033[94mFold {fold_counter}/{total_folds}\033[0m")
 
-        # Split the data into training and validation sets
-        train_bags = [bags[i] for i in train_index]
-        train_labels = [y_train[i] for i in train_index]
-        val_bag = [bags[i] for i in test_index]
-        val_label = [y_test[i] for i in test_index]
+        # Get the actual index in the full dataset
+        test_index_full = eval_indices[test_idx_in_eval[0]]
+        test_subject_id = all_subject_ids[test_index_full]
+
+        # Train on ALL subjects except the test subject
+        train_bags = [all_bags[i] for i in range(len(all_bags)) if i != test_index_full]
+        train_labels = [all_y_train[i] for i in range(len(all_bags)) if i != test_index_full]
+
+        # Test only on the held-out common subject
+        val_bag = [all_bags[test_index_full]]
+        val_label = [all_y_test[test_index_full]]
+
+        print(f"Test subject: {test_subject_id}, Training on {len(train_bags)} subjects")
 
         train_data = np.array(train_bags)
         train_data = normalize_mil(train_data)

@@ -123,7 +123,7 @@ def run_multiple_tremor_experiments(
 def run_multiple_tremor_loso_experiments(
     sdataset,
     repetitions=10,
-    save_path="../results/200_results_tremor_baseline.json",
+    save_path="../results/200_results_tremor_pretrained_new.json",
     restart_interval=1,
 ):
     """
@@ -192,12 +192,16 @@ def run_multiple_tremor_loso_experiments(
             return np.nan, np.nan
         return np.nanmean(values), np.nanstd(values)
 
+    # Get common subject IDs for LOSO evaluation (subjects in both tremor and typing)
+    common_subject_ids = get_common_subject_ids()
+
     # Run the experiment for this session
     for i in range(start_iteration, end_iteration):
         print(f"\033[91mRepetition {i + 1}/{repetitions}\033[0m")
         try:
             # Perform the tremor loso evaluation
-            _, _, _, results = tremor_loso_evaluate(sdataset)
+            # Only evaluate on common subjects (tremor + typing), train on all tremor data
+            _, _, _, results = tremor_loso_evaluate(sdataset, eval_subject_ids=common_subject_ids)
 
             # Append results to lists
             accuracy_list.append(results["final_accuracy"])
@@ -492,18 +496,18 @@ if __name__ == "__main__":
     print("RESULTS")
 
     # Load datasets
-    typing_sdataset = load_typing_dataset()
-    # tremor_sdataset = load_tremor_dataset()
+    # typing_sdataset = load_typing_dataset()
+    tremor_sdataset = load_tremor_dataset()
 
     # Run typing experiments if dataset is available
-    if typing_sdataset is not None:
-        print("Running typing experiments...")
-        run_multiple_typing_experiments(typing_sdataset, repetitions=10)
+    # if typing_sdataset is not None:
+    #     print("Running typing experiments...")
+    #     run_multiple_typing_experiments(typing_sdataset, repetitions=10)
 
     # Run tremor experiments if dataset is available (uncomment to run)
-    # if tremor_sdataset is not None:
-    #     # print("Running tremor RKF experiments...")
-    #     # run_multiple_tremor_experiments(tremor_sdataset, k=5, n_repeats=5, repetitions=10)
+    if tremor_sdataset is not None:
+        # print("Running tremor RKF experiments...")
+        # run_multiple_tremor_experiments(tremor_sdataset, k=5, n_repeats=5, repetitions=10)
 
-    #     print("Running tremor LOSO experiments...")
-    #     run_multiple_tremor_loso_experiments(tremor_sdataset, repetitions=10)
+        print("Running tremor LOSO experiments...")
+        run_multiple_tremor_loso_experiments(tremor_sdataset, repetitions=10)

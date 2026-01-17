@@ -747,7 +747,7 @@ def fusion_loso_evaluate(endtask_df):
         test_predictions = fusion_model.predict(test_dataset)
 
         # Convert predictions to binary (threshold 0.5)
-        test_predictions_binary = (test_predictions > 0.5).astype(int)
+        test_predictions_binary = (test_predictions > 0.55).astype(int)
 
         all_predictions.extend(test_predictions_binary)
         all_true_labels.extend(test_labels_array)
@@ -1032,7 +1032,7 @@ def run_fusion_experiment(repetitions=1):
 if __name__ == "__main__":
     # Choose what to run
     run_fusion_phase = True  # Set to True to run fusion experiment
-    fusion_repetitions = 20  # Number of LOSO repetitions to run
+    fusion_repetitions = 10  # Number of LOSO repetitions to run
 
     if run_fusion_phase:
         print("Running fusion phase...")
