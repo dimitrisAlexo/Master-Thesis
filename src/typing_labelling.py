@@ -80,6 +80,55 @@ def plot_typing_histograms(X, subject_idx, save_fig=False):
     return
 
 
+def save_simple_histogram(X, subject_idx, histogram_idx, output_dir="plots"):
+    """
+    Save a single histogram as a simple, clean plot for block diagrams.
+
+    Parameters:
+    - X: The input data containing typing histograms
+    - subject_idx: The index of the subject in the dataset
+    - histogram_idx: Which histogram (0-99) to save
+    - output_dir: Directory to save the plot
+    """
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Get the histogram data
+    histogram_data = X.iloc[subject_idx][histogram_idx]
+
+    # Create figure with clean styling
+    fig, ax = plt.subplots(figsize=(6, 3))
+
+    # Plot histogram as bar chart with thick bars
+    x_axis = range(len(histogram_data))
+    ax.bar(x_axis, histogram_data, width=2.0, color='steelblue', edgecolor='none')
+
+    # Remove top and right spines
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_visible(False)
+
+    # Remove y-axis
+    ax.yaxis.set_visible(False)
+
+    # Keep only x-axis
+    ax.spines['bottom'].set_linewidth(1.5)
+    ax.tick_params(axis='x', labelsize=10, length=0)
+
+    # Remove x-axis labels for cleaner look
+    ax.set_xticks([])
+
+    # Tight layout
+    plt.tight_layout()
+
+# Save with high DPI and white background
+    filename = f"{output_dir}/hist_s{subject_idx}_h{histogram_idx}.png"
+    plt.savefig(filename, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+    plt.close()
+
+    print(f"Saved: {filename}")
+
+
 # Get the histogram data (X column contains bags of histograms)
 X = typing_sdataset["X"]
 
@@ -168,54 +217,54 @@ print("=" * 50)
 # Example annotation template - replace with your actual annotations
 # After inspecting the plots, uncomment and update these with the actual histogram indices
 
-# FMI = 1
-labeled_histograms_dataset = label_histograms(
-    labeled_histograms_dataset,
-    X,
-    subject_idx=1,
-    histogram_indices=[0, 2, 3, 4, 5, 13, 17, 38, 68, 52],
-    label=1,
-)
+# # FMI = 1
+# labeled_histograms_dataset = label_histograms(
+#     labeled_histograms_dataset,
+#     X,
+#     subject_idx=1,
+#     histogram_indices=[0, 2, 3, 4, 5, 13, 17, 38, 68, 52],
+#     label=1,
+# )
 
-labeled_histograms_dataset = label_histograms(
-    labeled_histograms_dataset,
-    X,
-    subject_idx=2,
-    histogram_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    label=1,
-)
+# labeled_histograms_dataset = label_histograms(
+#     labeled_histograms_dataset,
+#     X,
+#     subject_idx=2,
+#     histogram_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+#     label=1,
+# )
 
-labeled_histograms_dataset = label_histograms(
-    labeled_histograms_dataset,
-    X,
-    subject_idx=5,
-    histogram_indices=[4, 5, 6, 8, 9, 13, 15, 18, 22, 23],
-    label=1,
-)
+# labeled_histograms_dataset = label_histograms(
+#     labeled_histograms_dataset,
+#     X,
+#     subject_idx=5,
+#     histogram_indices=[4, 5, 6, 8, 9, 13, 15, 18, 22, 23],
+#     label=1,
+# )
 
-labeled_histograms_dataset = label_histograms(
-    labeled_histograms_dataset,
-    X,
-    subject_idx=6,
-    histogram_indices=[1, 3, 36, 37, 46, 49, 61, 63, 71, 77],
-    label=1,
-)
+# labeled_histograms_dataset = label_histograms(
+#     labeled_histograms_dataset,
+#     X,
+#     subject_idx=6,
+#     histogram_indices=[1, 3, 36, 37, 46, 49, 61, 63, 71, 77],
+#     label=1,
+# )
 
-labeled_histograms_dataset = label_histograms(
-    labeled_histograms_dataset,
-    X,
-    subject_idx=7,
-    histogram_indices=[0, 2, 5, 7, 15, 34, 48, 49, 62, 82],
-    label=1,
-)
+# labeled_histograms_dataset = label_histograms(
+#     labeled_histograms_dataset,
+#     X,
+#     subject_idx=7,
+#     histogram_indices=[0, 2, 5, 7, 15, 34, 48, 49, 62, 82],
+#     label=1,
+# )
 
-labeled_histograms_dataset = label_histograms(
-    labeled_histograms_dataset,
-    X,
-    subject_idx=9,
-    histogram_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    label=1,
-)
+# labeled_histograms_dataset = label_histograms(
+#     labeled_histograms_dataset,
+#     X,
+#     subject_idx=9,
+#     histogram_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+#     label=1,
+# )
 
 # FMI = 0
 # labeled_histograms_dataset = label_histograms(
@@ -226,56 +275,85 @@ labeled_histograms_dataset = label_histograms(
 #     label=0,
 # )
 
-labeled_histograms_dataset = label_histograms(
-    labeled_histograms_dataset,
-    X,
-    subject_idx=12,
-    histogram_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    label=0,
-)
+# labeled_histograms_dataset = label_histograms(
+#     labeled_histograms_dataset,
+#     X,
+#     subject_idx=12,
+#     histogram_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+#     label=0,
+# )
 
-labeled_histograms_dataset = label_histograms(
-    labeled_histograms_dataset,
-    X,
-    subject_idx=13,
-    histogram_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    label=0,
-)
+# labeled_histograms_dataset = label_histograms(
+#     labeled_histograms_dataset,
+#     X,
+#     subject_idx=13,
+#     histogram_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+#     label=0,
+# )
 
-labeled_histograms_dataset = label_histograms(
-    labeled_histograms_dataset,
-    X,
-    subject_idx=22,
-    histogram_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    label=0,
-)
+# labeled_histograms_dataset = label_histograms(
+#     labeled_histograms_dataset,
+#     X,
+#     subject_idx=22,
+#     histogram_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+#     label=0,
+# )
 
-labeled_histograms_dataset = label_histograms(
-    labeled_histograms_dataset,
-    X,
-    subject_idx=23,
-    histogram_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    label=0,
-)
+# labeled_histograms_dataset = label_histograms(
+#     labeled_histograms_dataset,
+#     X,
+#     subject_idx=23,
+#     histogram_indices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+#     label=0,
+# )
 
 # Continue adding more subjects and histograms...
 # Aim for balanced dataset (similar number of label 0 and label 1 samples)
 
-# After completing manual annotation, save the dataset
-if len(labeled_histograms_dataset) > 0:
-    labeled_histograms_dataset.to_pickle("labeled_typing_histograms_dataset.pickle")
-    print(
-        f"\nLabeled histograms dataset has been saved to 'labeled_typing_histograms_dataset.pickle'."
-    )
-    print(f"Dataset contains {len(labeled_histograms_dataset)} labeled histograms")
-    print("Label distribution:")
-    print(labeled_histograms_dataset["y"].value_counts())
-else:
-    print("\nNo histograms have been labeled yet.")
-    print(
-        "Please uncomment the plotting functions, inspect the data, and add your annotations."
-    )
+# Save some sample histograms as simple plots for block diagram
+print("\n" + "=" * 50)
+print("Saving sample histograms for block diagram...")
+print("=" * 50)
 
-print(labeled_histograms_dataset)
+# Save representative histograms (FMI=1)
+save_simple_histogram(X, subject_idx=1, histogram_idx=0)
+save_simple_histogram(X, subject_idx=1, histogram_idx=2)
+save_simple_histogram(X, subject_idx=2, histogram_idx=0)
+save_simple_histogram(X, subject_idx=2, histogram_idx=3)
+save_simple_histogram(X, subject_idx=5, histogram_idx=4)
+save_simple_histogram(X, subject_idx=5, histogram_idx=6)
+save_simple_histogram(X, subject_idx=6, histogram_idx=1)
+save_simple_histogram(X, subject_idx=7, histogram_idx=0)
+save_simple_histogram(X, subject_idx=9, histogram_idx=0)
+save_simple_histogram(X, subject_idx=9, histogram_idx=5)
+
+# Save representative histograms (FMI=0)
+save_simple_histogram(X, subject_idx=12, histogram_idx=0)
+save_simple_histogram(X, subject_idx=12, histogram_idx=3)
+save_simple_histogram(X, subject_idx=13, histogram_idx=0)
+save_simple_histogram(X, subject_idx=13, histogram_idx=5)
+save_simple_histogram(X, subject_idx=22, histogram_idx=0)
+save_simple_histogram(X, subject_idx=22, histogram_idx=7)
+save_simple_histogram(X, subject_idx=23, histogram_idx=0)
+save_simple_histogram(X, subject_idx=23, histogram_idx=4)
+
+print("Sample histograms saved to 'plots/' directory")
+
+# # After completing manual annotation, save the dataset
+# if len(labeled_histograms_dataset) > 0:
+#     labeled_histograms_dataset.to_pickle("labeled_typing_histograms_dataset.pickle")
+#     print(
+#         f"\nLabeled histograms dataset has been saved to 'labeled_typing_histograms_dataset.pickle'."
+#     )
+#     print(f"Dataset contains {len(labeled_histograms_dataset)} labeled histograms")
+#     print("Label distribution:")
+#     print(labeled_histograms_dataset["y"].value_counts())
+# else:
+#     print("\nNo histograms have been labeled yet.")
+#     print(
+#         "Please uncomment the plotting functions, inspect the data, and add your annotations."
+#     )
+
+# print(labeled_histograms_dataset)
 
 print(f"\nTotal processing time: {time.time() - start:.2f} seconds")
