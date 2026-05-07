@@ -305,11 +305,11 @@ class MILModel(keras.Model):
         if self.mode == "simclr":
             # Use bimodal weights if use_bimodal flag is set, otherwise use standard SimCLR weights
             if self.use_bimodal:
-                weights_file = "typing_bimodal_embeddings.weights.h5"
+                weights_file = "weights/fusion/typing_bimodal_embeddings.weights.h5"
             else:
-                weights_file = "typing_simclr_embeddings.weights.h5"
+                weights_file = "weights/typing/typing_simclr_embeddings.weights.h5"
         elif self.mode == "federated":
-            weights_file = "federated.weights.h5"
+            weights_file = "weights/federated/federated.weights.h5"
         else:
             return  # No finetune for baseline
         try:
@@ -928,7 +928,7 @@ if __name__ == "__main__":
     # typing_sdata = unpickle_data(sdata_path)
     # sdataset = form_typing_dataset(typing_sdata, K2)
 
-    with open("typing_sdataset.pickle", "rb") as f:
+    with open("datasets/typing_sdataset.pickle", "rb") as f:
         print("Loading sdataset...")
         sdataset = pkl.load(f)
 

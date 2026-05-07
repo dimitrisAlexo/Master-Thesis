@@ -80,7 +80,7 @@ learning_rate = 0.001
 # tremor_sdata = unpickle_data(sdata_path)
 # gdataset = form_unlabeled_tremor_dataset(tremor_gdata, tremor_sdata, E_thres, Kt)
 
-with open("unlabeled_data.pickle", "rb") as f:
+with open("datasets/unlabeled_data.pickle", "rb") as f:
     gdataset = pkl.load(f)
 
 print(np.shape(gdataset))
@@ -101,7 +101,7 @@ gdataset = (
 # gdataset = gdataset.batch(batch_size).shuffle(buffer_size=int(len(gdataset) / batch_size)).prefetch(
 #     buffer_size=tf.data.AUTOTUNE)
 
-with open("labeled_windows_dataset.pickle", "rb") as f:
+with open("datasets/labeled_windows_dataset.pickle", "rb") as f:
     labeled_gdataset = pkl.load(f)
 
 labeled_gdataset = labeled_gdataset.sample(frac=1).reset_index(drop=True)
@@ -541,7 +541,7 @@ pretraining_model.compile(
 )
 
 checkpoint = callbacks.ModelCheckpoint(
-    filepath="simclr_best_model.weights.h5",
+    filepath="weights/tremor/simclr_best_model.weights.h5",
     monitor="val_p_loss",
     mode="min",
     save_best_only=True,
@@ -574,7 +574,7 @@ pretraining_history = pretraining_model.fit(
 
 # Load best weights.
 print("Loading best weights...")
-pretraining_model.load_weights("simclr_best_model.weights.h5")
+pretraining_model.load_weights("weights/tremor/simclr_best_model.weights.h5")
 
 print(
     "Maximal contrastive accuracy: {:.2f}%".format(
@@ -592,11 +592,11 @@ print(
 #     print("Positive similarity: {:.2f}, Negative similarity: {:.2f}".format(pos_sim, neg_sim))
 
 pretraining_model.get_layer("embeddings_function").save_weights(
-    "tremor_simclr_embeddings.weights.h5"
+    "weights/tremor/tremor_simclr_embeddings.weights.h5"
 )
-print("Encoder weights saved to tremor_simclr_embeddings.weights.h5")
+print("Encoder weights saved to weights/tremor/tremor_simclr_embeddings.weights.h5")
 
-# pretraining_model.get_layer("embeddings_function").load_weights("embeddings.weights.h5")
+# pretraining_model.get_layer("embeddings_function").load_weights("weights/tremor/embeddings.weights.h5")
 
 pretraining_model.plot_contrastive_loss(pretraining_history)
 pretraining_model.plot_validation_accuracy(pretraining_history)

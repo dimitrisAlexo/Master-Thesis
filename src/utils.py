@@ -109,7 +109,8 @@ def form_tremor_dataset(tremor_data, E_thres, K1, train_label_str, test_label_st
     # Create a DataFrame from the data list
     df = pd.DataFrame(data, columns=["subject_id", "X", "y_train", "y_test"])
 
-    with open("sdataset.pickle", "wb") as f:
+    os.makedirs("datasets", exist_ok=True)
+    with open("datasets/sdataset.pickle", "wb") as f:
         pkl.dump(df, f)
 
     return df
@@ -145,7 +146,8 @@ def form_typing_dataset(typing_sdata, K2):
             label = subject[-1]  # Label is last element, 0 or 1
             data.append((subject_id, bag, label))
     df = pd.DataFrame(data, columns=["subject_id", "X", "y"])
-    with open("typing_sdataset.pickle", "wb") as f:
+    os.makedirs("datasets", exist_ok=True)
+    with open("datasets/typing_sdataset.pickle", "wb") as f:
         pkl.dump(df, f)
     return df
 
@@ -181,7 +183,8 @@ def form_unlabeled_typing_dataset(typing_gdata, typing_sdata, K2):
     data = data[indices]
 
     # Save to pickle file
-    with open("unlabeled_typing_data.pickle", "wb") as f:
+    os.makedirs("datasets", exist_ok=True)
+    with open("datasets/unlabeled_typing_data.pickle", "wb") as f:
         pkl.dump(data, f)
 
     return data
@@ -296,7 +299,8 @@ def form_fusion_dataset(
     df = pd.DataFrame(data, columns=["subject_id", "X1", "X2", "y"])
 
     # Save to pickle file
-    with open("fusion_dataset.pickle", "wb") as f:
+    os.makedirs("datasets", exist_ok=True)
+    with open("datasets/fusion_dataset.pickle", "wb") as f:
         pkl.dump(df, f)
 
     return df
@@ -371,7 +375,8 @@ def form_unlabeled_tremor_dataset(tremor_gdata, tremor_sdata, E_thres, Kt):
     indices = np.random.permutation(data.shape[0])
     data = data[indices]
 
-    with open("unlabeled_data.pickle", "wb") as f:
+    os.makedirs("datasets", exist_ok=True)
+    with open("datasets/unlabeled_data.pickle", "wb") as f:
         pkl.dump(data, f)
 
     return data
@@ -411,10 +416,11 @@ def form_federated_dataset(tremor_gdata, tremor_sdata, E_thres, Kt, num_clients)
         raise ValueError("Not enough bags to form the specified number of clients.")
 
     # Save raw data (list of NumPy arrays)
-    with open("federated_data.pickle", "wb") as f:
+    os.makedirs("datasets", exist_ok=True)
+    with open("datasets/federated_data.pickle", "wb") as f:
         pkl.dump(federated_data, f)
 
-    print("Saved federated_data to 'federated_data.pickle'")
+    print("Saved federated_data to 'datasets/federated_data.pickle'")
 
     return federated_data
 

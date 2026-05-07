@@ -16,7 +16,7 @@ Kt = 100
 
 # sdataset = form_dataset(tremor_sdata, E_thres, Kt, 'tremor_manual', 'tremor_manual')
 
-with open("sdataset.pickle", "rb") as f:
+with open("datasets/sdataset.pickle", "rb") as f:
     print("Loading sdataset...")
     sdataset = pkl.load(f)
 
@@ -54,7 +54,7 @@ def plot_accelerometer_windows(X, subject_idx, save_fig=False):
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # Adjust layout to fit title
 
     if save_fig:
-        plt.savefig(f"labeled_data_{subject_idx}.png")  # Save the figure if needed
+        plt.savefig(f"window_plots/labeled_data_{subject_idx}.png")  # Save the figure if needed
 
     plt.show()
 
@@ -282,9 +282,9 @@ windows_dataset = label_windows(
 )
 
 # Save the dataset to a CSV file
-windows_dataset.to_pickle("labeled_windows_dataset.pickle")
+windows_dataset.to_pickle("datasets/labeled_windows_dataset.pickle")
 
-print("Labeled windows dataset has been saved to 'labeled_windows_dataset.pickle'.")
+print("Labeled windows dataset has been saved to 'datasets/labeled_windows_dataset.pickle'.")
 
 print(windows_dataset)
 

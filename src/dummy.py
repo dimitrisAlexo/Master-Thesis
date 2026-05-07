@@ -13,11 +13,11 @@ from utils import unpickle_data
 def load_typing_dataset():
     """Load the typing supervised dataset"""
     try:
-        with open("typing_sdataset.pickle", "rb") as f:
+        with open("datasets/typing_sdataset.pickle", "rb") as f:
             dataset = pkl.load(f)
         return dataset
     except FileNotFoundError:
-        print("typing_sdataset.pickle not found. Creating it...")
+        print("datasets/typing_sdataset.pickle not found. Creating it...")
         # Try to create the dataset if it doesn't exist
         import os
 

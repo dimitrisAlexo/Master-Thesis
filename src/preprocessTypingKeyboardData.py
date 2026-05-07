@@ -1,4 +1,5 @@
 from pymongo import MongoClient
+import os
 import numpy as np
 import pickle
 from tqdm import tqdm
@@ -336,7 +337,8 @@ def visualize_histograms(typing_bags, subject_idx=0, num_histograms=10):
     plt.tight_layout()
 
     # Save figure
-    output_path = f"typing_histograms_subject_{subject_idx}_{serial}.png"
+    os.makedirs("window_plots", exist_ok=True)
+    output_path = f"window_plots/typing_histograms_subject_{subject_idx}_{serial}.png"
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Saved visualization to: {output_path}")
     plt.close()

@@ -9,11 +9,11 @@ start = time.time()
 # Load typing supervised dataset
 # First, let's try to load existing typing_sdataset.pickle
 try:
-    with open("typing_sdataset.pickle", "rb") as f:
+    with open("datasets/typing_sdataset.pickle", "rb") as f:
         print("Loading typing_sdataset...")
         typing_sdataset = pkl.load(f)
 except FileNotFoundError:
-    print("typing_sdataset.pickle not found. Creating it...")
+    print("datasets/typing_sdataset.pickle not found. Creating it...")
     # Load typing data and create the dataset
     sdata_path = os.path.join("..", "data", "typing_sdata.pickle")
     typing_sdata = unpickle_data(sdata_path)
@@ -72,8 +72,9 @@ def plot_typing_histograms(X, subject_idx, save_fig=False):
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # Adjust layout to fit title
 
     if save_fig:
+        os.makedirs("window_plots", exist_ok=True)
         plt.savefig(
-            f"labeled_typing_data_{subject_idx}.png", dpi=150, bbox_inches="tight"
+            f"window_plots/labeled_typing_data_{subject_idx}.png", dpi=150, bbox_inches="tight"
         )
 
     # plt.show()
@@ -341,9 +342,9 @@ print("Sample histograms saved to 'plots/' directory")
 
 # # After completing manual annotation, save the dataset
 # if len(labeled_histograms_dataset) > 0:
-#     labeled_histograms_dataset.to_pickle("labeled_typing_histograms_dataset.pickle")
+#     labeled_histograms_dataset.to_pickle("datasets/labeled_typing_histograms_dataset.pickle")
 #     print(
-#         f"\nLabeled histograms dataset has been saved to 'labeled_typing_histograms_dataset.pickle'."
+#         f"\nLabeled histograms dataset has been saved to 'datasets/labeled_typing_histograms_dataset.pickle'."
 #     )
 #     print(f"Dataset contains {len(labeled_histograms_dataset)} labeled histograms")
 #     print("Label distribution:")

@@ -917,7 +917,7 @@ pretraining_model.compile(
 
 # Callbacks
 checkpoint = callbacks.ModelCheckpoint(
-    filepath="typing_bimodal_best_model.weights.h5",
+    filepath="weights/fusion/typing_bimodal_best_model.weights.h5",
     monitor="val_p_loss",  # Changed from c_loss - care about downstream task
     mode="min",
     save_best_only=True,
@@ -953,7 +953,7 @@ pretraining_history = pretraining_model.fit(
 
 # Load best weights
 print("\nLoading best weights...")
-pretraining_model.load_weights("typing_bimodal_best_model.weights.h5")
+pretraining_model.load_weights("weights/fusion/typing_bimodal_best_model.weights.h5")
 
 print(
     "Maximal contrastive accuracy: {:.2f}%".format(
@@ -968,8 +968,8 @@ print(
 )
 
 # Save the typing encoder weights
-pretraining_model.typing_encoder.save_weights("typing_bimodal_embeddings.weights.h5")
-print("✓ Typing encoder weights saved to typing_bimodal_embeddings.weights.h5")
+pretraining_model.typing_encoder.save_weights("weights/fusion/typing_bimodal_embeddings.weights.h5")
+print("✓ Typing encoder weights saved to weights/fusion/typing_bimodal_embeddings.weights.h5")
 
 # Plot results
 pretraining_model.plot_contrastive_loss(pretraining_history)

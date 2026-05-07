@@ -137,7 +137,7 @@ def pd_accuracy(y_true, y_pred):
 def load_tremor_dataset():
     """Load tremor dataset from pickle file"""
     print("Loading tremor dataset...")
-    with open("sdataset.pickle", "rb") as f:
+    with open("datasets/sdataset.pickle", "rb") as f:
         tremor_dataset = pkl.load(f)
     # print(f"Tremor dataset loaded: {tremor_dataset}")
     return tremor_dataset
@@ -153,14 +153,14 @@ def load_typing_dataset(common_subjects_only=False):
     print("Loading typing datasets...")
 
     # Load original typing dataset
-    with open("typing_sdataset.pickle", "rb") as f:
+    with open("datasets/typing_sdataset.pickle", "rb") as f:
         typing_dataset = pkl.load(f)
-    print(f"  Loaded typing_sdataset.pickle: {len(typing_dataset)} subjects")
+    print(f"  Loaded datasets/typing_sdataset.pickle: {len(typing_dataset)} subjects")
 
     # Filter to only common subjects if requested (for fusion pretraining)
     if common_subjects_only:
         try:
-            with open("fusion_dataset.pickle", "rb") as f:
+            with open("datasets/fusion_dataset.pickle", "rb") as f:
                 fusion_df = pkl.load(f)
             common_ids = set(fusion_df["subject_id"].tolist())
             typing_dataset = typing_dataset[
@@ -170,7 +170,7 @@ def load_typing_dataset(common_subjects_only=False):
                 f"  Filtered to {len(typing_dataset)} common subjects (tremor+typing)"
             )
         except FileNotFoundError:
-            print("  Warning: fusion_dataset.pickle not found, using all subjects")
+            print("  Warning: datasets/fusion_dataset.pickle not found, using all subjects")
 
     # Load additional typing dataset
     with open("../data/additional_typing_sdataset.pickle", "rb") as f:
@@ -255,11 +255,11 @@ def pretrain_tremor_branch(subject_exclude_id=None):
 
     # Save tremor branch weights
     print("Saving tremor branch weights...")
-    trained_tremor_model.embeddings_network.save_weights("tremor_embeddings.weights.h5")
+    trained_tremor_model.embeddings_network.save_weights("weights/tremor/tremor_embeddings.weights.h5")
 
     # Save attention layer weights separately if needed
     attention_weights = trained_tremor_model.attention_layer.get_weights()
-    with open("tremor_attention.weights.pkl", "wb") as f:
+    with open("weights/tremor/tremor_attention.weights.pkl", "wb") as f:
         pkl.dump(attention_weights, f)
 
     print("Tremor branch pretraining completed!")
@@ -339,11 +339,11 @@ def pretrain_typing_branch(subject_exclude_id=None):
 
     # Save typing branch weights
     print("Saving typing branch weights...")
-    trained_typing_model.embeddings_network.save_weights("typing_embeddings.weights.h5")
+    trained_typing_model.embeddings_network.save_weights("weights/typing/typing_embeddings.weights.h5")
 
     # Save attention layer weights separately if needed
     attention_weights = trained_typing_model.attention_layer.get_weights()
-    with open("typing_attention.weights.pkl", "wb") as f:
+    with open("weights/typing/typing_attention.weights.pkl", "wb") as f:
         pkl.dump(attention_weights, f)
 
     print("Typing branch pretraining completed!")
@@ -413,7 +413,7 @@ def create_endtask_dataset():
 
     # Option 1: Load pre-computed dataset from pickle
     print("Loading fusion dataset from pickle...")
-    with open("fusion_dataset.pickle", "rb") as f:
+    with open("datasets/fusion_dataset.pickle", "rb") as f:
         fusion_df = pkl.load(f)
     print(f"Loaded dataset: {len(fusion_df)} subjects")
     y_array = np.array(fusion_df["y"].tolist(), dtype=int)
@@ -512,9 +512,9 @@ class FusionModel(keras.Model):
                     (None, self.tremor_branch.Ws, self.tremor_branch.C)
                 )
             self.tremor_branch.embeddings_network.load_weights(
-                "tremor_embeddings.weights.h5"
+                "weights/tremor/tremor_embeddings.weights.h5"
             )
-            print(f"Loaded tremor embeddings weights from tremor_embeddings.weights.h5")
+            print(f"Loaded tremor embeddings weights from weights/tremor/tremor_embeddings.weights.h5")
 
             # Ensure typing embeddings network is built
             if not self.typing_branch.embeddings_network.built:
@@ -523,9 +523,9 @@ class FusionModel(keras.Model):
                     (None, self.typing_branch.K2, self.typing_branch.B)
                 )
             self.typing_branch.embeddings_network.load_weights(
-                "typing_embeddings.weights.h5"
+                "weights/typing/typing_embeddings.weights.h5"
             )
-            print(f"Loaded typing embeddings weights from typing_embeddings.weights.h5")
+            print(f"Loaded typing embeddings weights from weights/typing/typing_embeddings.weights.h5")
 
             # Load attention weights if needed
             # Build attention layers before setting weights
@@ -533,19 +533,19 @@ class FusionModel(keras.Model):
                 self.tremor_branch.attention_layer.build(
                     (None, self.tremor_branch.Kt, self.tremor_branch.M)
                 )
-            with open("tremor_attention.weights.pkl", "rb") as f:
+            with open("weights/tremor/tremor_attention.weights.pkl", "rb") as f:
                 tremor_attention_weights = pkl.load(f)
                 self.tremor_branch.attention_layer.set_weights(tremor_attention_weights)
-            print("Loaded tremor attention weights from tremor_attention.weights.pkl")
+            print("Loaded tremor attention weights from weights/tremor/tremor_attention.weights.pkl")
 
             if not self.typing_branch.attention_layer.built:
                 self.typing_branch.attention_layer.build(
                     (None, self.typing_branch.K2, self.typing_branch.M)
                 )
-            with open("typing_attention.weights.pkl", "rb") as f:
+            with open("weights/typing/typing_attention.weights.pkl", "rb") as f:
                 typing_attention_weights = pkl.load(f)
                 self.typing_branch.attention_layer.set_weights(typing_attention_weights)
-            print("Loaded typing attention weights from typing_attention.weights.pkl")
+            print("Loaded typing attention weights from weights/typing/typing_attention.weights.pkl")
 
             print("Pretrained weights loaded successfully!")
 

@@ -327,9 +327,9 @@ class MILModel(keras.Model):
     def finetune(self):
         """Load pre-trained weights for the embeddings function."""
         if self.mode == "simclr":
-            weights_file = "tremor_simclr_embeddings.weights.h5"
+            weights_file = "weights/tremor/tremor_simclr_embeddings.weights.h5"
         elif self.mode == "federated":
-            weights_file = "federated.weights.h5"
+            weights_file = "weights/federated/federated.weights.h5"
         else:
             return  # No finetune for baseline
         try:
@@ -954,7 +954,7 @@ if __name__ == "__main__":
     # tremor_sdata = unpickle_data(sdata_path)
     # sdataset = form_tremor_dataset(tremor_sdata, E_thres, Kt, "tremor_manual", "tremor_manual")
 
-    with open("sdataset.pickle", "rb") as f:
+    with open("datasets/sdataset.pickle", "rb") as f:
         print("Loading sdataset...")
         sdataset = pkl.load(f)
 

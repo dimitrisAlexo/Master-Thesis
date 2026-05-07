@@ -18,13 +18,13 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 print("Loading datasets...")
 
 # Load tremor labeled dataset
-with open("labeled_windows_dataset.pickle", "rb") as f:
+with open("datasets/labeled_windows_dataset.pickle", "rb") as f:
     tremor_dataset = pkl.load(f)
 print(f"Tremor dataset: {len(tremor_dataset)} samples")
 print(f"Tremor label distribution:\n{tremor_dataset['y'].value_counts()}")
 
 # Load typing labeled dataset
-with open("labeled_typing_histograms_dataset.pickle", "rb") as f:
+with open("datasets/labeled_typing_histograms_dataset.pickle", "rb") as f:
     typing_dataset = pkl.load(f)
 print(f"Typing dataset: {len(typing_dataset)} samples")
 print(f"Typing label distribution:\n{typing_dataset['y'].value_counts()}")
@@ -91,13 +91,13 @@ print("\nCreating encoder models...")
 # Create tremor encoder and load weights
 tremor_encoder = tremor_embeddings_function(M=64)
 tremor_encoder.build((None, 1000, 3))  # Build with tremor input shape
-tremor_encoder.load_weights("tremor_simclr_embeddings.weights.h5")
+tremor_encoder.load_weights("weights/tremor/tremor_simclr_embeddings.weights.h5")
 print("Loaded tremor encoder weights")
 
 # Create typing encoder and load weights
 typing_encoder = typing_embeddings_function(M=64)
 typing_encoder.build((None, 502))  # Build with typing input shape
-typing_encoder.load_weights("typing_simclr_embeddings.weights.h5")
+typing_encoder.load_weights("weights/typing/typing_simclr_embeddings.weights.h5")
 print("Loaded typing encoder weights")
 
 print("\nGenerating embeddings...")

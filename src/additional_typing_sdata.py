@@ -245,7 +245,7 @@ if __name__ == "__main__":
     save_dataset(dataset)
     # print_statistics(dataset)
 
-    typing_sdataset = pkl.load(open("typing_sdataset.pickle", "rb"))
+    typing_sdataset = pkl.load(open("datasets/typing_sdataset.pickle", "rb"))
     additional_sdataset = pkl.load(open("../data/additional_typing_sdataset.pickle", "rb"))
 
     print("Typing dataset statistics:")

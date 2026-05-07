@@ -73,11 +73,11 @@ M = 64
 # )
 
 # Load the dataset
-with open("federated_data.pickle", "rb") as f:
+with open("datasets/federated_data.pickle", "rb") as f:
     federated_data = pkl.load(f)
     f.close()
 
-with open("labeled_windows_dataset.pickle", "rb") as f:
+with open("datasets/labeled_windows_dataset.pickle", "rb") as f:
     labeled_gdataset = pkl.load(f)
     f.close()
 
@@ -384,12 +384,12 @@ simclr_model.set_weights_from_state(model_weights)
 
 # Save the encoder weights
 try:
-    simclr_model.get_encoder.save_weights("federated.weights.h5")
+    simclr_model.get_encoder.save_weights("weights/federated/federated.weights.h5")
     print("Trained encoder weights saved successfully.")
 except Exception as e:
     print(f"Failed to save federated weights: {e}")
 
-# simclr_model.get_encoder.load_weights("federated.weights.h5")
+# simclr_model.get_encoder.load_weights("weights/federated/federated.weights.h5")
 embeddings_model = simclr_model.get_encoder
 
 

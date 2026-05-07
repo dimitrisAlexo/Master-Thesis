@@ -465,7 +465,7 @@ def interactive_labeling_session(
     matched_pairs,
     start_idx=0,
     num_pairs=100,
-    checkpoint_filepath="../src/labeling_checkpoint.pickle",
+    checkpoint_filepath="datasets/labeling_checkpoint.pickle",
 ):
     """
     Interactive labeling session where you can label pairs one by one.

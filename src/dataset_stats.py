@@ -19,10 +19,10 @@ print("=" * 60)
 
 # Tremor labeled dataset (sdataset)
 try:
-    with open("sdataset.pickle", "rb") as f:
+    with open("datasets/sdataset.pickle", "rb") as f:
         tremor_sdataset = pkl.load(f)
 
-    print("\n--- Tremor Labeled Dataset (sdataset.pickle) ---")
+    print("\n--- Tremor Labeled Dataset (datasets/sdataset.pickle) ---")
     print(f"Number of subjects: {len(tremor_sdataset)}")
 
     # Get label distribution
@@ -41,17 +41,17 @@ try:
         print(f"\nSample bag shape: {sample_shape}")
 
 except FileNotFoundError:
-    print("\n--- Tremor Labeled Dataset (sdataset.pickle) ---")
+    print("\n--- Tremor Labeled Dataset (datasets/sdataset.pickle) ---")
     print("File not found!")
 except Exception as e:
     print(f"Error loading tremor labeled dataset: {e}")
 
 # Tremor unlabeled dataset
 try:
-    with open("unlabeled_tremor_data.pickle", "rb") as f:
+    with open("datasets/unlabeled_tremor_data.pickle", "rb") as f:
         tremor_unlabeled = pkl.load(f)
 
-    print("\n--- Tremor Unlabeled Dataset (unlabeled_tremor_data.pickle) ---")
+    print("\n--- Tremor Unlabeled Dataset (datasets/unlabeled_tremor_data.pickle) ---")
     print(f"Number of samples: {len(tremor_unlabeled)}")
 
     if len(tremor_unlabeled) > 0:
@@ -59,7 +59,7 @@ try:
         print(f"Sample shape: {sample_shape}")
 
 except FileNotFoundError:
-    print("\n--- Tremor Unlabeled Dataset (unlabeled_tremor_data.pickle) ---")
+    print("\n--- Tremor Unlabeled Dataset (datasets/unlabeled_tremor_data.pickle) ---")
     print("File not found!")
 except Exception as e:
     print(f"Error loading tremor unlabeled dataset: {e}")
@@ -73,10 +73,10 @@ print("=" * 60)
 
 # Typing labeled dataset (sdataset)
 try:
-    with open("typing_sdataset.pickle", "rb") as f:
+    with open("datasets/typing_sdataset.pickle", "rb") as f:
         typing_sdataset = pkl.load(f)
 
-    print("\n--- Typing Labeled Dataset (typing_sdataset.pickle) ---")
+    print("\n--- Typing Labeled Dataset (datasets/typing_sdataset.pickle) ---")
     print(f"Number of subjects: {len(typing_sdataset)}")
 
     # Get label distribution
@@ -95,17 +95,17 @@ try:
         print(f"\nSample bag shape: {sample_shape}")
 
 except FileNotFoundError:
-    print("\n--- Typing Labeled Dataset (typing_sdataset.pickle) ---")
+    print("\n--- Typing Labeled Dataset (datasets/typing_sdataset.pickle) ---")
     print("File not found!")
 except Exception as e:
     print(f"Error loading typing labeled dataset: {e}")
 
 # Typing unlabeled dataset
 try:
-    with open("unlabeled_typing_data.pickle", "rb") as f:
+    with open("datasets/unlabeled_typing_data.pickle", "rb") as f:
         typing_unlabeled = pkl.load(f)
 
-    print("\n--- Typing Unlabeled Dataset (unlabeled_typing_data.pickle) ---")
+    print("\n--- Typing Unlabeled Dataset (datasets/unlabeled_typing_data.pickle) ---")
     print(f"Number of samples: {len(typing_unlabeled)}")
 
     if len(typing_unlabeled) > 0:
@@ -113,7 +113,7 @@ try:
         print(f"Sample shape: {sample_shape}")
 
 except FileNotFoundError:
-    print("\n--- Typing Unlabeled Dataset (unlabeled_typing_data.pickle) ---")
+    print("\n--- Typing Unlabeled Dataset (datasets/unlabeled_typing_data.pickle) ---")
     print("File not found!")
 except Exception as e:
     print(f"Error loading typing unlabeled dataset: {e}")

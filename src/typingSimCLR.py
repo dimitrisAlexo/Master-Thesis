@@ -76,7 +76,7 @@ learning_rate = 0.001
 # typing_gdata = unpickle_data(gdata_path)
 # gdataset = form_unlabeled_typing_dataset(typing_gdata, typing_sdata, K2)
 
-with open("unlabeled_typing_data.pickle", "rb") as f:
+with open("datasets/unlabeled_typing_data.pickle", "rb") as f:
     gdataset = pkl.load(f)
 
 print(f"Original dataset shape: {gdataset.shape}")
@@ -94,7 +94,7 @@ gdataset = (
 )
 
 # Load labeled typing histograms dataset
-with open("labeled_typing_histograms_dataset.pickle", "rb") as f:
+with open("datasets/labeled_typing_histograms_dataset.pickle", "rb") as f:
     labeled_gdataset = pkl.load(f)
 
 labeled_gdataset = labeled_gdataset.sample(frac=1).reset_index(drop=True)
@@ -663,7 +663,7 @@ pretraining_model.compile(
 )
 
 checkpoint = callbacks.ModelCheckpoint(
-    filepath="typing_simclr_best_model.weights.h5",
+    filepath="weights/typing/typing_simclr_best_model.weights.h5",
     monitor="c_loss",
     mode="min",
     save_best_only=True,
@@ -696,7 +696,7 @@ pretraining_history = pretraining_model.fit(
 
 # Load best weights
 print("Loading best weights...")
-pretraining_model.load_weights("typing_simclr_best_model.weights.h5")
+pretraining_model.load_weights("weights/typing/typing_simclr_best_model.weights.h5")
 
 print(
     "Maximal contrastive accuracy: {:.2f}%".format(
@@ -712,9 +712,9 @@ print(
 
 # Save the encoder weights for use in the MIL model
 pretraining_model.get_layer("embeddings_function").save_weights(
-    "typing_simclr_embeddings.weights.h5"
+    "weights/typing/typing_simclr_embeddings.weights.h5"
 )
-print("Encoder weights saved to typing_simclr_embeddings.weights.h5")
+print("Encoder weights saved to weights/typing/typing_simclr_embeddings.weights.h5")
 
 # Plot results
 pretraining_model.plot_contrastive_loss(pretraining_history)

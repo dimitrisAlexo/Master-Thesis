@@ -432,14 +432,14 @@ def run_multiple_typing_experiments(
 def load_typing_dataset():
     """Load the typing supervised dataset"""
     try:
-        with open("typing_sdataset.pickle", "rb") as f:
+        with open("datasets/typing_sdataset.pickle", "rb") as f:
             print("Loading typing sdataset...")
             sdataset = pkl.load(f)
         print(f"windows shape: {sdataset['X'][0].shape}")
         return sdataset
     except FileNotFoundError:
         print(
-            "typing_sdataset.pickle not found. Please run the dataset creation first."
+            "datasets/typing_sdataset.pickle not found. Please run the dataset creation first."
         )
         return None
 
@@ -463,7 +463,7 @@ def load_additional_typing_dataset():
 def get_common_subject_ids():
     """Get subject IDs that are common between tremor and typing datasets (fusion subjects)"""
     try:
-        with open("fusion_dataset.pickle", "rb") as f:
+        with open("datasets/fusion_dataset.pickle", "rb") as f:
             print("Loading fusion dataset to identify common subjects...")
             fusion_df = pkl.load(f)
         common_ids = set(fusion_df["subject_id"].tolist())
@@ -471,7 +471,7 @@ def get_common_subject_ids():
         return common_ids
     except FileNotFoundError:
         print(
-            "fusion_dataset.pickle not found. Using all typing subjects for evaluation."
+            "datasets/fusion_dataset.pickle not found. Using all typing subjects for evaluation."
         )
         return None
 
@@ -479,13 +479,13 @@ def get_common_subject_ids():
 def load_tremor_dataset():
     """Load the tremor supervised dataset"""
     try:
-        with open("sdataset.pickle", "rb") as f:
+        with open("datasets/sdataset.pickle", "rb") as f:
             print("Loading tremor sdataset...")
             sdataset = pkl.load(f)
             print(f"windows shape: {sdataset['X'][0].shape}")
         return sdataset
     except FileNotFoundError:
-        print("sdataset.pickle not found. Please run the dataset creation first.")
+        print("datasets/sdataset.pickle not found. Please run the dataset creation first.")
         return None
 
 
