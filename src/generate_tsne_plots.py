@@ -30,7 +30,7 @@ print(f"Typing dataset: {len(typing_dataset)} samples")
 print(f"Typing label distribution:\n{typing_dataset['y'].value_counts()}")
 
 
-# Define tremor encoder architecture (must match tremorSimCLRlabeled.py)
+# Define tremor encoder architecture (must match tremorSimCLR.py)
 def tremor_embeddings_function(M=64):
     return keras.Sequential(
         [
