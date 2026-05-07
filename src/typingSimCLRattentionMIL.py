@@ -22,8 +22,8 @@ from tf_keras import mixed_precision
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import LeaveOneOut
-from sklearn.model_selection import RepeatedKFold
 from sklearn.metrics import confusion_matrix
+import argparse
 
 # Default parameters - can be overridden when importing
 DEFAULT_K2 = 500
@@ -617,316 +617,24 @@ def loso_evaluate(
     return all_true_labels, all_predicted_probs, all_predicted_labels, results
 
 
-def rkf_evaluate(
-    data, k, n_repeats, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_SIZE
-):
-    # Extract the bags and labels
-    bags = data["X"].tolist()
-    y = data["y"].tolist()
-
-    # Set default input shape if not provided
-    if input_shape is None:
-        K2, B = np.array(data["X"])[0].shape
-        input_shape = (K2, B)
-
-    # Initialize RepeatedKFold
-    rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats)
-    overall_tn = 0
-    overall_fp = 0
-    overall_fn = 0
-    overall_tp = 0
-
-    all_true_labels = []
-    all_predicted_labels = []
-    all_predicted_probs = []
-
-    for idx, (train_index, test_index) in enumerate(rkf.split(bags), 1):
-        print(f"\033[91mIteration {idx}/{k * n_repeats}\033[0m")
-
-        # Split the data into training and validation sets
-        train_bags = [bags[i] for i in train_index]
-        train_labels = [y[i] for i in train_index]
-        val_bags = [bags[i] for i in test_index]
-        val_label = [y[i] for i in test_index]
-
-        train_data = np.array(train_bags)
-        train_labels = np.array([np.array([label]) for label in train_labels])
-
-        val_data = np.array(val_bags)
-        val_labels = np.array([np.array([label]) for label in val_label])
-
-        print_memory_usage()
-
-        train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
-        train_dataset = (
-            train_dataset.shuffle(buffer_size=10 * len(train_data))
-            .batch(batch_size)
-            .prefetch(buffer_size=tf.data.AUTOTUNE)
-        )
-        val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
-        val_dataset = val_dataset.batch(batch_size).prefetch(
-            buffer_size=tf.data.AUTOTUNE
-        )
-
-        current_model = MILModel(input_shape=input_shape, M=M)
-
-        # Train the models on the training data
-        trained_model = train(train_dataset, train_dataset, current_model)
-
-        # Evaluate the model on the validation data
-        class_predictions = predict(val_dataset, trained_model)
-
-        print(class_predictions)
-
-        del trained_model
-        gc.collect()
-
-        # Compute confusion matrix
-        predicted_labels = np.argmax(class_predictions, axis=1).flatten()
-        true_labels = val_labels.flatten()
-
-        # Store true and predicted labels for plotting later
-        all_true_labels.extend(true_labels)
-        all_predicted_labels.extend(predicted_labels)
-        predicted_probs = class_predictions[:, 1].flatten()
-        all_predicted_probs.extend(predicted_probs)
-
-        print("predicted_labels:", predicted_labels)
-        print("true_labels:", true_labels)
-
-        tn, fp, fn, tp = safe_confusion_matrix(true_labels, predicted_labels)
-        print("tn:", tn)
-        print("fp:", fp)
-        print("fn:", fn)
-        print("tp:", tp)
-
-        # Calculate metrics
-        accuracy, sensitivity, specificity, precision, f1_score = calculate_metrics(
-            tn, fp, fn, tp
-        )
-
-        print("accuracy:", accuracy)
-        print("sensitivity:", sensitivity)
-        print("specificity:", specificity)
-        print("precision:", precision)
-        print("f1_score:", f1_score)
-
-        overall_tn += tn
-        overall_fp += fp
-        overall_fn += fn
-        overall_tp += tp
-
-    # Calculate the final accuracy across all folds and repetitions
-    (
-        final_accuracy,
-        final_sensitivity,
-        final_specificity,
-        final_precision,
-        final_f1_score,
-    ) = calculate_metrics(overall_tn, overall_fp, overall_fn, overall_tp)
-
-    print(f"Final average accuracy across all subjects: {final_accuracy * 100:.2f}%")
-    print(
-        f"Final average sensitivity across all subjects: {final_sensitivity * 100:.2f}%"
-    )
-    print(
-        f"Final average specificity across all subjects: {final_specificity * 100:.2f}%"
-    )
-    print(f"Final average precision across all subjects: {final_precision * 100:.2f}%")
-    print(f"Final average F1-score across all subjects: {final_f1_score * 100:.2f}%")
-
-    # Convert lists to arrays for plotting
-    all_true_labels = np.array(all_true_labels)
-    all_predicted_probs = np.array(all_predicted_probs)
-    all_predicted_labels = np.array(all_predicted_labels)
-    valid_indices = ~np.isnan(all_true_labels) & ~np.isnan(all_predicted_probs)
-    all_true_labels = all_true_labels[valid_indices]
-    all_predicted_probs = all_predicted_probs[valid_indices]
-    all_predicted_labels = all_predicted_labels[valid_indices]
-
-    results = {
-        "final_accuracy": final_accuracy,
-        "final_sensitivity": final_sensitivity,
-        "final_specificity": final_specificity,
-        "final_precision": final_precision,
-        "final_f1_score": final_f1_score,
-    }
-
-    return all_true_labels, all_predicted_probs, all_predicted_labels, results
-
-
-def rkf_evaluate_with_validation(
-    data, k, n_repeats, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_SIZE
-):
-    # Extract the bags and labels
-    bags = data["X"].tolist()
-    y = data["y"].tolist()
-
-    # Set default input shape if not provided
-    if input_shape is None:
-        K2, B = np.array(data["X"])[0].shape
-        input_shape = (K2, B)
-
-    # Initialize RepeatedKFold
-    rkf = RepeatedKFold(n_splits=k, n_repeats=n_repeats)
-    overall_tn = 0
-    overall_fp = 0
-    overall_fn = 0
-    overall_tp = 0
-
-    all_true_labels = []
-    all_predicted_labels = []
-    all_predicted_probs = []
-
-    for idx, (train_val_index, test_index) in enumerate(rkf.split(bags), 1):
-        print(f"\033[91mIteration {idx}/{k * n_repeats}\033[0m")
-
-        # Split the data into train+val and test sets
-        train_val_bags = [bags[i] for i in train_val_index]
-        train_val_labels = [y[i] for i in train_val_index]
-        test_bags = [bags[i] for i in test_index]
-        test_labels = [y[i] for i in test_index]
-
-        # Further split train_val into train and val
-        rkf_inner = RepeatedKFold(n_splits=k - 1, n_repeats=1)
-        train_index, val_index = next(rkf_inner.split(train_val_bags))
-
-        # Prepare the training, validation, and testing datasets
-        train_bags = [train_val_bags[i] for i in train_index]
-        train_labels = [train_val_labels[i] for i in train_index]
-        val_bags = [train_val_bags[i] for i in val_index]
-        val_labels = [train_val_labels[i] for i in val_index]
-
-        # Convert all sets to numpy arrays
-        train_data = np.array(train_bags)
-        train_labels = np.array([np.array([label]) for label in train_labels])
-
-        val_data = np.array(val_bags)
-        val_labels = np.array([np.array([label]) for label in val_labels])
-
-        test_data = np.array(test_bags)
-        test_labels = np.array([np.array([label]) for label in test_labels])
-
-        print_memory_usage()
-
-        # Create TensorFlow datasets
-        train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
-        train_dataset = (
-            train_dataset.shuffle(buffer_size=10 * len(train_data))
-            .batch(batch_size)
-            .prefetch(buffer_size=tf.data.AUTOTUNE)
-        )
-
-        val_dataset = tf.data.Dataset.from_tensor_slices((val_data, val_labels))
-        val_dataset = val_dataset.batch(batch_size).prefetch(
-            buffer_size=tf.data.AUTOTUNE
-        )
-
-        test_dataset = tf.data.Dataset.from_tensor_slices((test_data, test_labels))
-        test_dataset = test_dataset.batch(batch_size).prefetch(
-            buffer_size=tf.data.AUTOTUNE
-        )
-
-        # Create the model
-        current_model = MILModel(input_shape=input_shape, M=M)
-
-        # Train the model on the training and validation data
-        trained_model = train(train_dataset, val_dataset, current_model)
-
-        # Evaluate the model on the test data
-        class_predictions = predict(test_dataset, trained_model)
-
-        del trained_model
-        gc.collect()
-
-        # Compute confusion matrix
-        predicted_labels = np.argmax(class_predictions, axis=1).flatten()
-        true_labels = test_labels.flatten()
-
-        # Store true and predicted labels for plotting later
-        all_true_labels.extend(true_labels)
-        all_predicted_labels.extend(predicted_labels)
-        predicted_probs = class_predictions[:, 1].flatten()
-        all_predicted_probs.extend(predicted_probs)
-
-        print("predicted_labels:", predicted_labels)
-        print("true_labels:", true_labels)
-        print("validation_labels:", val_labels.flatten())
-
-        tn, fp, fn, tp = safe_confusion_matrix(true_labels, predicted_labels)
-        print("tn:", tn)
-        print("fp:", fp)
-        print("fn:", fn)
-        print("tp:", tp)
-
-        # Calculate metrics
-        accuracy, sensitivity, specificity, precision, f1_score = calculate_metrics(
-            tn, fp, fn, tp
-        )
-
-        print("accuracy:", accuracy)
-        print("sensitivity:", sensitivity)
-        print("specificity:", specificity)
-        print("precision:", precision)
-        print("f1_score:", f1_score)
-
-        overall_tn += tn
-        overall_fp += fp
-        overall_fn += fn
-        overall_tp += tp
-
-    # Calculate the final accuracy across all folds and repetitions
-    (
-        final_accuracy,
-        final_sensitivity,
-        final_specificity,
-        final_precision,
-        final_f1_score,
-    ) = calculate_metrics(overall_tn, overall_fp, overall_fn, overall_tp)
-    print(f"Final average accuracy across all subjects: {final_accuracy * 100:.2f}%")
-    print(
-        f"Final average sensitivity across all subjects: {final_sensitivity * 100:.2f}%"
-    )
-    print(
-        f"Final average specificity across all subjects: {final_specificity * 100:.2f}%"
-    )
-    print(f"Final average precision across all subjects: {final_precision * 100:.2f}%")
-    print(f"Final average F1-score across all subjects: {final_f1_score * 100:.2f}%")
-
-    # Convert lists to arrays for plotting
-    all_true_labels = np.array(all_true_labels)
-    all_predicted_probs = np.array(all_predicted_probs)
-    all_predicted_labels = np.array(all_predicted_labels)
-    valid_indices = ~np.isnan(all_true_labels) & ~np.isnan(all_predicted_probs)
-    all_true_labels = all_true_labels[valid_indices]
-    all_predicted_probs = all_predicted_probs[valid_indices]
-    all_predicted_labels = all_predicted_labels[valid_indices]
-
-    return all_true_labels, all_predicted_probs, all_predicted_labels
-
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Typing MIL single LOSO evaluation")
+    parser.add_argument(
+        "--model",
+        choices=["baseline", "simclr"],
+        default="baseline",
+        help="Model mode: 'baseline' (no pretraining) or 'simclr' (with SimCLR pretraining)",
+    )
+    args = parser.parse_args()
+    MODE = args.model
+
     # Setup environment and start timer
     start = setup_environment()
 
-    # Validate MODE
-    assert MODE in [
-        "baseline",
-        "simclr",
-        "federated",
-    ], f"Invalid MODE: {MODE}"
-
     # Parameters
-    K2 = DEFAULT_K2
-    num_epochs = DEFAULT_PRETRAIN_NUM_EPOCHS
     batch_size = DEFAULT_BATCH_SIZE
     M = DEFAULT_M
-
-    # Load dataset
-    # Adjust the paths to be relative to the current script location
-    # sdata_path = os.path.join("..", "data", "typing_sdata.pickle")
-    # typing_sdata = unpickle_data(sdata_path)
-    # sdataset = form_typing_dataset(typing_sdata, K2)
 
     with open("datasets/typing_sdataset.pickle", "rb") as f:
         print("Loading sdataset...")
@@ -939,26 +647,14 @@ if __name__ == "__main__":
     input_shape = (K2, B)
     print("input shape:", input_shape)
 
-    # Run evaluation
+    # Run single LOSO evaluation
     true_labels, predicted_probs, predicted_labels, results = loso_evaluate(
         sdataset, input_shape=input_shape, M=M, batch_size=batch_size
     )
-    # true_labels, predicted_probs, predicted_labels, results = rkf_evaluate(
-    #     sdataset, k=3, n_repeats=4, input_shape=input_shape, M=M, batch_size=batch_size
-    # )
-    # true_labels, predicted_probs, predicted_labels = rkf_evaluate_with_validation(
-    #     sdataset, k=5, n_repeats=4, input_shape=input_shape, M=M, batch_size=batch_size
-    # )
-
-    # np.savez("roc_curve_pretraining.npz", true_labels=true_labels, predicted_probs=predicted_probs)
-    # np.savez("roc_curve_no_pretraining.npz", true_labels=true_labels, predicted_probs=predicted_probs)
 
     plot_roc_curve(true_labels, predicted_probs)
     plot_confusion_matrix(true_labels, predicted_labels)
 
     print(time.time() - start)
-
-    # Alarm
-    os.system('powershell.exe -c "[console]::beep(999,1000)"')
 
     input("Press Enter to exit...")

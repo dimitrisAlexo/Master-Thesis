@@ -70,39 +70,8 @@ print("Using mixed precision...")
 
 # === FUSION MODEL PARAMETERS ===
 MODE = "simclr"
-assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
-print(f"Using MODE: {MODE}")
-print(
-    f"SimCLR weight loading: {'ENABLED' if MODE in ['simclr', 'federated'] else 'DISABLED'}"
-)
-
-# Parse command line arguments
-parser = argparse.ArgumentParser(
-    description="Fusion training with optional bimodal pretraining"
-)
-parser.add_argument(
-    "--bimodal",
-    action="store_true",
-    help="Use bimodal SimCLR weights for typing encoder instead of standard SimCLR weights",
-)
-parser.add_argument(
-    "--debug",
-    action="store_true",
-    help="Run only critical folds (1, 4, 13, 15, 21, 22) for debugging",
-)
-args = parser.parse_args()
-
-USE_BIMODAL = args.bimodal
-if USE_BIMODAL:
-    print("\n" + "=" * 50)
-    print("USING BIMODAL PRETRAINING FOR TYPING BRANCH")
-    print("=" * 50 + "\n")
-
-DEBUG_MODE = args.debug
-if DEBUG_MODE:
-    print("\n" + "=" * 50)
-    print("DEBUG MODE: Running only critical folds (1, 4, 13, 15, 21, 22)")
-    print("=" * 50 + "\n")
+USE_BIMODAL = False
+DEBUG_MODE = False
 
 # Tremor parameters
 TREMOR_E_THRES = 0.15 * 2
@@ -1007,15 +976,12 @@ def run_multiple_fusion_experiments(
         return {}
 
 
-def run_fusion_experiment(repetitions=1):
+def run_fusion_experiment(repetitions=1, save_path=None):
     """Run the complete fusion experiment with optional multiple repetitions"""
     print("Starting fusion experiment...")
 
     # Create endtask dataset
     endtask_df = create_endtask_dataset()
-
-    # print("Endtask dataset: ")
-    # print(endtask_df)
 
     if repetitions == 1:
         # Single run
@@ -1024,22 +990,54 @@ def run_fusion_experiment(repetitions=1):
         return predictions, true_labels, metrics
     else:
         # Multiple runs with statistics
-        summary = run_multiple_fusion_experiments(endtask_df, repetitions=repetitions)
+        kwargs = {"repetitions": repetitions}
+        if save_path is not None:
+            kwargs["save_path"] = save_path
+        summary = run_multiple_fusion_experiments(endtask_df, **kwargs)
         print("\nMultiple fusion experiments completed!")
         return summary
 
 
 if __name__ == "__main__":
-    # Choose what to run
-    run_fusion_phase = True  # Set to True to run fusion experiment
-    fusion_repetitions = 10  # Number of LOSO repetitions to run
+    parser = argparse.ArgumentParser(description="Fusion model single LOSO evaluation")
+    parser.add_argument(
+        "--model",
+        choices=["baseline", "simclr"],
+        default="simclr",
+        help="Model mode: 'baseline' (no pretraining) or 'simclr' (with SimCLR pretraining)",
+    )
+    parser.add_argument(
+        "--bimodal",
+        action="store_true",
+        help="Use bimodal SimCLR weights for typing encoder instead of standard SimCLR weights",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Run only critical folds (1, 4, 13, 15, 21, 22) for debugging",
+    )
+    args = parser.parse_args()
 
-    if run_fusion_phase:
-        print("Running fusion phase...")
-        results = run_fusion_experiment(repetitions=fusion_repetitions)
-        print(f"Fusion experiment results: {type(results)}")
+    MODE = args.model
+    USE_BIMODAL = args.bimodal
+    DEBUG_MODE = args.debug
+
+    assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
+    print(f"Using MODE: {MODE}")
+    print(
+        f"SimCLR weight loading: {'ENABLED' if MODE in ['simclr', 'federated'] else 'DISABLED'}"
+    )
+    if USE_BIMODAL:
+        print("\n" + "=" * 50)
+        print("USING BIMODAL PRETRAINING FOR TYPING BRANCH")
+        print("=" * 50 + "\n")
+    if DEBUG_MODE:
+        print("\n" + "=" * 50)
+        print("DEBUG MODE: Running only critical folds (1, 4, 13, 15, 21, 22)")
+        print("=" * 50 + "\n")
+
+    print("Running single fusion LOSO evaluation...")
+    results = run_fusion_experiment(repetitions=1)
+    print(f"Fusion experiment results: {type(results)}")
 
     print(f"\nTotal execution time: {time.time() - start:.2f} seconds")
-
-    # Alarm (commented out for Linux compatibility)
-    os.system('powershell.exe -c "[console]::beep(999,1000)"')
