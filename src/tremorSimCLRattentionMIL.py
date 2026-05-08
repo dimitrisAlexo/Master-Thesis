@@ -218,8 +218,8 @@ class MILModel(keras.Model):
         )
         self.classifier = self.final_classifier()
 
-        # Finetune only for simclr/federated
-        if self.mode in ["simclr", "federated"]:
+        # Finetune only for simclr/federated/subject_simclr
+        if self.mode in ["simclr", "federated", "subject_simclr"]:
             self.finetune()
         else:
             print("Finetune skipped for baseline mode.")
@@ -325,11 +325,13 @@ class MILModel(keras.Model):
         return output
 
     def finetune(self):
-        """Load pre-trained weights for the embeddings function."""
+        """Load pre-trained weights for the embeddings function (and attention for subject_simclr)."""
         if self.mode == "simclr":
             weights_file = "weights/tremor/tremor_simclr_embeddings.weights.h5"
         elif self.mode == "federated":
             weights_file = "weights/federated/federated.weights.h5"
+        elif self.mode == "subject_simclr":
+            weights_file = "weights/tremor/tremor_subject_simclr_embeddings.weights.h5"
         else:
             return  # No finetune for baseline
         try:
@@ -338,7 +340,21 @@ class MILModel(keras.Model):
             self.embeddings_network.trainable = False  # Freeze encoder
             print(f"Successfully loaded weights from '{weights_file}' into encoder.")
         except Exception as e:
-            print(f"Failed to load weights: {e}")
+            print(f"Failed to load encoder weights: {e}")
+
+        if self.mode == "subject_simclr":
+            # Also load attention weights (warm-start; kept trainable for fine-tuning)
+            attention_file = "weights/tremor/tremor_subject_simclr_attention.weights.pkl"
+            try:
+                dummy_embs = tf.zeros((1, self.Kt, self.M))
+                dummy_mask = tf.zeros((1, self.Kt, 1))
+                self.attention_layer(dummy_embs, dummy_mask)  # Build before loading
+                import pickle as _pkl
+                with open(attention_file, "rb") as _f:
+                    self.attention_layer.set_weights(_pkl.load(_f))
+                print(f"Successfully loaded attention weights from '{attention_file}'.")
+            except Exception as e:
+                print(f"Failed to load attention weights: {e}")
 
     # Baseline train step
     def train_step_baseline(self, data):
@@ -647,7 +663,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tremor MIL single LOSO evaluation")
     parser.add_argument(
         "--model",
-        choices=["baseline", "simclr"],
+        choices=["baseline", "simclr", "subject_simclr"],
         default="simclr",
         help="Model mode: 'baseline' (no pretraining) or 'simclr' (with SimCLR pretraining)",
     )

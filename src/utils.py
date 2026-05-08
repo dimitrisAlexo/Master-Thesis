@@ -7,6 +7,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import roc_curve, auc, confusion_matrix
+import os
 
 
 def unpickle_data(filepath):
@@ -345,6 +346,68 @@ def filter_data(subject, E_thres, Kt):
         return None
 
     return np.array(bag)
+
+
+def _get_tremor_windows(subject, E_thres, max_K):
+    """Extract energy-filtered windows for a subject WITHOUT zero-padding.
+
+    Returns array of shape (N, 1000, 3) where N <= max_K, or None if fewer than 10 windows.
+    """
+    bag = []
+    for session in subject[3]:
+        num_pairs = session.shape[0] // 2
+        session = np.concatenate(
+            [session[2 * i : 2 * i + 2].reshape(1, 1000, 3) for i in range(num_pairs)],
+            axis=0,
+        )
+        filtered_session = [
+            segment for segment in session if calculate_energy(segment) >= E_thres
+        ]
+        if len(filtered_session) >= 2:
+            bag.extend([segment for segment in filtered_session])
+    bag.sort(key=lambda segment: calculate_energy(segment), reverse=True)
+    bag = bag[:max_K]
+
+    if len(bag) < 10:
+        return None
+
+    return np.array(bag)  # shape (N, 1000, 3), N <= max_K
+
+
+def form_unlabeled_subject_tremor_dataset(tremor_gdata, tremor_sdata, E_thres, K1=100):
+    """Build a per-subject unlabeled dataset for subject-level SimCLR pretraining.
+
+    Unlike form_unlabeled_tremor_dataset, windows are kept per-subject (not flattened),
+    and zero-padding is deferred to view creation so random subsampling is unambiguous.
+    Subjects in tremor_sdata (labeled set) are excluded to prevent data leakage.
+
+    Saves: datasets/unlabeled_subject_data.pickle
+           list of N arrays, each shape (N_i, 1000, 3), N_i <= K1
+    """
+    print("Length of tremor_gdata: ", len(tremor_gdata))
+    tremor_gdata = {
+        key: value for key, value in tremor_gdata.items() if key not in tremor_sdata
+    }
+    print("After excluding labeled subjects: ", len(tremor_gdata))
+
+    data = []
+    counter = 0
+
+    for subject_id in tremor_gdata.keys():
+        if isinstance(tremor_gdata[subject_id][1], dict):
+            windows = _get_tremor_windows(tremor_gdata[subject_id], E_thres, K1)
+            if windows is not None:
+                counter += 1
+                print(counter)
+                data.append(windows)  # Keep per-subject structure (list of arrays)
+
+    print("Counter: ", counter)
+
+    os.makedirs("datasets", exist_ok=True)
+    with open("datasets/unlabeled_subject_data.pickle", "wb") as f:
+        pkl.dump(data, f)
+
+    return data
 
 
 def form_unlabeled_tremor_dataset(tremor_gdata, tremor_sdata, E_thres, Kt):

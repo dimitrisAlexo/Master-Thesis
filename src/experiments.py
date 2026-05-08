@@ -4,6 +4,7 @@ experiments.py — Run multiple LOSO experiments (10 repetitions) for any modali
 Usage:
     python experiments.py --type tremor --model baseline
     python experiments.py --type tremor --model simclr
+    python experiments.py --type tremor --model subject_simclr
     python experiments.py --type fmi    --model baseline
     python experiments.py --type fmi    --model simclr
     python experiments.py --type fusion --model baseline
@@ -250,9 +251,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--model",
-        choices=["baseline", "simclr"],
+        choices=["baseline", "simclr", "subject_simclr"],
         required=True,
-        help="Model mode: 'baseline' (no pretraining) or 'simclr' (with SimCLR pretraining)",
+        help="Model mode: 'baseline' (no pretraining), 'simclr' (window SimCLR), or 'subject_simclr' (subject-level SimCLR)",
     )
     args = parser.parse_args()
 
