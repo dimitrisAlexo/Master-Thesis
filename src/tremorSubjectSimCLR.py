@@ -24,6 +24,8 @@ import queue
 import threading
 
 import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 os.environ["KERAS_BACKEND"] = "tensorflow"
@@ -78,6 +80,7 @@ ACTIVE_AUGMENTATIONS = {"flipping", "rotation"}
 ROTATION_ANGLE = np.pi / 4  # Max rotation angle (radians). π = 180°, π/4 = 45° (safer default)
 DEBUG = False          # If True, train on a small random subset of subjects
 DEBUG_SUBJECTS = 20    # Number of subjects to use when DEBUG = True
+USE_TRAINING = False    # If False, skip training and load saved weights for t-SNE visualization
 
 # ── Dataset ──────────────────────────────────────────────────────────────────
 
@@ -588,24 +591,75 @@ if __name__ == "__main__":
     _ = model.projection_head(tf.zeros((2, M), dtype=tf.float32))
     _ = model.key_projection_head(tf.zeros((2, M), dtype=tf.float32))
 
-    # Seed key encoder with the same initial weights as the query encoder
-    model.initialize_key_encoder()
-
-    model.encoder.summary()
-    model.projection_head.summary()
-
-    train(model, optimizer)
-
-    # ── Save weights ─────────────────────────────────────────────────────────
-    os.makedirs("weights/tremor", exist_ok=True)
-
     encoder_path = "weights/tremor/tremor_subject_simclr_embeddings.weights.h5"
     attention_path = "weights/tremor/tremor_subject_simclr_attention.weights.pkl"
 
-    model.encoder.save_weights(encoder_path)
-    with open(attention_path, "wb") as f:
-        pkl.dump(model.attention_layer.get_weights(), f)
+    if USE_TRAINING:
+        # Seed key encoder with the same initial weights as the query encoder
+        model.initialize_key_encoder()
 
-    print(f"\nEncoder weights saved to '{encoder_path}'")
-    print(f"Attention weights saved to '{attention_path}'")
-    print(f"Total training time: {(time.time() - start) / 60:.1f} min")
+        model.encoder.summary()
+        model.projection_head.summary()
+
+        train(model, optimizer)
+
+        # ── Save weights ─────────────────────────────────────────────────────
+        os.makedirs("weights/tremor", exist_ok=True)
+
+        model.encoder.save_weights(encoder_path)
+        with open(attention_path, "wb") as f:
+            pkl.dump(model.attention_layer.get_weights(), f)
+
+        print(f"\nEncoder weights saved to '{encoder_path}'")
+        print(f"Attention weights saved to '{attention_path}'")
+        print(f"Total training time: {(time.time() - start) / 60:.1f} min")
+    else:
+        # ── Load saved weights ────────────────────────────────────────────────
+        model.encoder.load_weights(encoder_path)
+        with open(attention_path, "rb") as f:
+            model.attention_layer.set_weights(pkl.load(f))
+        print(f"Loaded encoder weights from '{encoder_path}'")
+        print(f"Loaded attention weights from '{attention_path}'")
+
+    # ── t-SNE visualization ───────────────────────────────────────────────────
+    print("\nGenerating t-SNE subject-level embeddings from labeled dataset...")
+    with open("datasets/sdataset.pickle", "rb") as f:
+        labeled_df = pkl.load(f)
+
+    labels_np = np.array(labeled_df["y_train"].tolist())
+
+    # Pad/truncate each subject bag to K1 windows
+    all_bags = labeled_df["X"].tolist()
+    bags_padded = np.zeros((len(all_bags), K1, Ws, C), dtype=np.float32)
+    for i, bag in enumerate(all_bags):
+        bag = np.array(bag, dtype=np.float32)
+        n = min(len(bag), K1)
+        bags_padded[i, :n] = bag[:n]
+
+    # Encode subjects in small batches to avoid OOM
+    infer_batch = 4
+    subject_embs_list = []
+    for i in range(0, len(bags_padded), infer_batch):
+        chunk = tf.constant(bags_padded[i : i + infer_batch])
+        flat = tf.reshape(chunk, (-1, Ws, C))
+        flat_norm = model.normalizer(flat, training=False)
+        chunk_norm = tf.reshape(flat_norm, (-1, K1, Ws, C))
+        embs = model._encode_subjects(chunk_norm, training=False)
+        subject_embs_list.append(embs.numpy())
+    embeddings = np.concatenate(subject_embs_list, axis=0).astype(np.float32)
+    print(f"Subject embeddings shape: {embeddings.shape}")
+
+    reduced = TSNE(n_components=2, perplexity=30, random_state=42).fit_transform(embeddings)
+
+    plt.figure(figsize=(10, 8))
+    plt.scatter(reduced[labels_np == 0, 0], reduced[labels_np == 0, 1], label="No tremor", c="b", alpha=0.5)
+    plt.scatter(reduced[labels_np == 1, 0], reduced[labels_np == 1, 1], label="Tremor", c="r", alpha=0.5)
+    plt.title("t-SNE — Subject SimCLR Embeddings (attention-aggregated)")
+    plt.xlabel("t-SNE Dimension 1")
+    plt.ylabel("t-SNE Dimension 2")
+    plt.legend()
+    plt.tight_layout()
+    os.makedirs("plots", exist_ok=True)
+    plt.savefig("plots/tremor_subject_simclr_tsne.png", dpi=150)
+    plt.show()
+    print("t-SNE plot saved to 'plots/tremor_subject_simclr_tsne.png'")
