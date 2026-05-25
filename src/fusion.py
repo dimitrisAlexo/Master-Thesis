@@ -1022,10 +1022,10 @@ if __name__ == "__main__":
     USE_BIMODAL = args.bimodal
     DEBUG_MODE = args.debug
 
-    assert MODE in ["baseline", "simclr", "federated"], f"Invalid MODE: {MODE}"
+    assert MODE in ["baseline", "simclr"], f"Invalid MODE: {MODE}"
     print(f"Using MODE: {MODE}")
     print(
-        f"SimCLR weight loading: {'ENABLED' if MODE in ['simclr', 'federated'] else 'DISABLED'}"
+        f"SimCLR weight loading: {'ENABLED' if MODE == 'simclr' else 'DISABLED'}"
     )
     if USE_BIMODAL:
         print("\n" + "=" * 50)

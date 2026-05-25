@@ -76,7 +76,7 @@ def setup_environment():
 
 # === MODE SELECTION ===
 # Default MODE - can be overridden when importing
-MODE = "baseline"  # "baseline", "simclr", "federated"
+MODE = "baseline"  # "baseline", "simclr", "subject_simclr"
 
 
 class MILAttentionLayer(layers.Layer):
@@ -227,8 +227,8 @@ class MILModel(keras.Model):
         )
         self.classifier = self.final_classifier()
 
-        # Finetune only for simclr/federated
-        if self.mode in ["simclr", "federated"]:
+        # Finetune only for simclr/subject_simclr
+        if self.mode in ["simclr", "subject_simclr"]:
             self.finetune()
         else:
             print("Finetune skipped for baseline mode.")
@@ -301,15 +301,15 @@ class MILModel(keras.Model):
         return output
 
     def finetune(self):
-        """Load pre-trained weights for the embeddings function."""
+        """Load pre-trained weights for the embeddings function (and attention for subject_simclr)."""
         if self.mode == "simclr":
             # Use bimodal weights if use_bimodal flag is set, otherwise use standard SimCLR weights
             if self.use_bimodal:
                 weights_file = "weights/fusion/typing_bimodal_embeddings.weights.h5"
             else:
                 weights_file = "weights/typing/typing_simclr_embeddings.weights.h5"
-        elif self.mode == "federated":
-            weights_file = "weights/federated/federated.weights.h5"
+        elif self.mode == "subject_simclr":
+            weights_file = "weights/typing/typing_subject_simclr_embeddings.weights.h5"
         else:
             return  # No finetune for baseline
         try:
@@ -318,7 +318,21 @@ class MILModel(keras.Model):
             self.embeddings_network.trainable = False  # Freeze encoder
             print(f"Successfully loaded weights from '{weights_file}' into encoder.")
         except Exception as e:
-            print(f"Failed to load weights: {e}")
+            print(f"Failed to load encoder weights: {e}")
+
+        if self.mode == "subject_simclr":
+            # Also load attention weights (warm-start; kept trainable for fine-tuning)
+            attention_file = "weights/typing/typing_subject_simclr_attention.weights.pkl"
+            try:
+                dummy_embs = tf.zeros((1, self.K2, self.M))
+                dummy_mask = tf.zeros((1, self.K2, 1))
+                self.attention_layer(dummy_embs, dummy_mask)  # Build before loading
+                import pickle as _pkl
+                with open(attention_file, "rb") as _f:
+                    self.attention_layer.set_weights(_pkl.load(_f))
+                print(f"Successfully loaded attention weights from '{attention_file}'.")
+            except Exception as e:
+                print(f"Failed to load attention weights: {e}")
 
     # Baseline train step
     def train_step_baseline(self, data):
@@ -332,7 +346,7 @@ class MILModel(keras.Model):
             metric.update_state(y, y_pred)
         return {m.name: m.result() for m in self.metrics}
 
-    # SimCLR/Federated train step (with encoder freezing/unfreezing)
+    # SimCLR train step (with encoder freezing/unfreezing)
     def freeze_encoder(self):
         """Freeze the encoder by setting trainable=False."""
         self.embeddings_network.trainable = False
@@ -427,7 +441,7 @@ def train(
         )
         return model
 
-    # simclr/federated: freeze encoder, train, then unfreeze and fine-tune
+    # simclr/subject_simclr: freeze encoder, train, then unfreeze and fine-tune
     model.freeze_encoder()
     model.compile(
         optimizer=optimizers.Adam(learning_rate=5e-4),
@@ -622,9 +636,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Typing MIL single LOSO evaluation")
     parser.add_argument(
         "--model",
-        choices=["baseline", "simclr"],
+        choices=["baseline", "simclr", "subject_simclr"],
         default="baseline",
-        help="Model mode: 'baseline' (no pretraining) or 'simclr' (with SimCLR pretraining)",
+        help="Model mode: 'baseline', 'simclr', or 'subject_simclr' (subject-level SimCLR)",
     )
     args = parser.parse_args()
     MODE = args.model

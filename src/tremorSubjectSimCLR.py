@@ -649,7 +649,8 @@ if __name__ == "__main__":
     embeddings = np.concatenate(subject_embs_list, axis=0).astype(np.float32)
     print(f"Subject embeddings shape: {embeddings.shape}")
 
-    reduced = TSNE(n_components=2, perplexity=30, random_state=42).fit_transform(embeddings)
+    perplexity = min(30, len(embeddings) - 1)
+    reduced = TSNE(n_components=2, perplexity=perplexity, random_state=42).fit_transform(embeddings)
 
     plt.figure(figsize=(10, 8))
     plt.scatter(reduced[labels_np == 0, 0], reduced[labels_np == 0, 1], label="No tremor", c="b", alpha=0.5)

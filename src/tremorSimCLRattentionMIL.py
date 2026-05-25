@@ -62,7 +62,7 @@ def setup_environment():
 
 # === MODE SELECTION ===
 # Default MODE - can be overridden when importing
-MODE = "simclr"  # Options: "baseline", "simclr", "federated"
+MODE = "simclr"  # Options: "baseline", "simclr", "subject_simclr"
 
 # Default parameters - can be overridden when importing
 DEFAULT_E_THRES = 0.15 * 2
@@ -188,8 +188,6 @@ class MILModel(keras.Model):
             mode if mode is not None else MODE
         )  # Use parameter or fall back to global
 
-        # Mode-specific batchnorm
-        use_batchnorm = not (self.mode == "federated")
         self.embeddings_learning_rate = 5e-4 if self.mode != "baseline" else 1e-3
         self.optimizer_embeddings = keras.optimizers.Adam(
             learning_rate=self.embeddings_learning_rate
@@ -200,9 +198,7 @@ class MILModel(keras.Model):
         self.reshape_to_embeddings = layers.Lambda(
             lambda x: tf.reshape(x, (-1, self.Ws, self.C))
         )
-        self.embeddings_network = self.embeddings_function(
-            self.M, use_batchnorm=use_batchnorm
-        )
+        self.embeddings_network = self.embeddings_function(self.M)
         self.reshape_to_attention = layers.Lambda(
             lambda x: tf.reshape(x, (-1, self.Kt, self.M)), name="reshape_attention"
         )
@@ -218,8 +214,8 @@ class MILModel(keras.Model):
         )
         self.classifier = self.final_classifier()
 
-        # Finetune only for simclr/federated/subject_simclr
-        if self.mode in ["simclr", "federated", "subject_simclr"]:
+        # Finetune only for simclr/subject_simclr
+        if self.mode in ["simclr", "subject_simclr"]:
             self.finetune()
         else:
             print("Finetune skipped for baseline mode.")
@@ -328,8 +324,6 @@ class MILModel(keras.Model):
         """Load pre-trained weights for the embeddings function (and attention for subject_simclr)."""
         if self.mode == "simclr":
             weights_file = "weights/tremor/tremor_simclr_embeddings.weights.h5"
-        elif self.mode == "federated":
-            weights_file = "weights/federated/federated.weights.h5"
         elif self.mode == "subject_simclr":
             weights_file = "weights/tremor/tremor_subject_simclr_embeddings.weights.h5"
         else:
@@ -368,7 +362,7 @@ class MILModel(keras.Model):
             metric.update_state(y, y_pred)
         return {m.name: m.result() for m in self.metrics}
 
-    # SimCLR/Federated train step (with encoder freezing/unfreezing)
+    # SimCLR train step (with encoder freezing/unfreezing)
     def freeze_encoder(self):
         """Freeze the encoder by setting trainable=False."""
         self.embeddings_network.trainable = False
@@ -463,7 +457,7 @@ def train(
         )
         return model
 
-    # simclr/federated: freeze encoder, train, then unfreeze and fine-tune
+    # simclr/subject_simclr: freeze encoder, train, then unfreeze and fine-tune
     model.freeze_encoder()
     model.compile(
         optimizer=optimizers.Adam(learning_rate=5e-4),

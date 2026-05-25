@@ -191,6 +191,41 @@ def form_unlabeled_typing_dataset(typing_gdata, typing_sdata, K2):
     return data
 
 
+def form_unlabeled_subject_typing_dataset(typing_gdata, typing_sdata, K2):
+    """Build a per-subject unlabeled typing dataset for subject-level SimCLR pretraining.
+
+    Unlike form_unlabeled_typing_dataset, histograms are kept per-subject (not flattened),
+    and zero-padding is deferred to view creation so random subsampling is unambiguous.
+    Subjects in typing_sdata (labeled set) are excluded to prevent data leakage.
+
+    Saves: datasets/unlabeled_subject_typing_data.pickle
+           list of N arrays, each shape (N_i, 502), N_i <= K2
+    """
+    print("Length of typing_gdata: ", len(typing_gdata))
+    typing_gdata = {
+        key: value for key, value in typing_gdata.items() if key not in typing_sdata
+    }
+    print("After excluding labeled subjects: ", len(typing_gdata))
+
+    data = []
+    counter = 0
+
+    for subject_id in typing_gdata.keys():
+        if typing_gdata[subject_id][0] and len(typing_gdata[subject_id][0]) >= 5:
+            histograms = np.array(typing_gdata[subject_id][0][:K2], dtype=np.float32)
+            counter += 1
+            print(f"Processed subject {counter}: {subject_id}, sessions: {len(histograms)}")
+            data.append(histograms)  # Keep per-subject structure
+
+    print("Total subjects processed: ", counter)
+
+    os.makedirs("datasets", exist_ok=True)
+    with open("datasets/unlabeled_subject_typing_data.pickle", "wb") as f:
+        pkl.dump(data, f)
+
+    return data
+
+
 def form_fusion_dataset(
     tremor_data, typing_sdata, E_thres, K1, K2, tremor_label_str="tremor_manual"
 ):
@@ -443,49 +478,6 @@ def form_unlabeled_tremor_dataset(tremor_gdata, tremor_sdata, E_thres, Kt):
         pkl.dump(data, f)
 
     return data
-
-
-def form_federated_dataset(tremor_gdata, tremor_sdata, E_thres, Kt, num_clients):
-
-    print("Length of tremor_gdata: ", len(tremor_gdata))
-    tremor_gdata = {
-        key: value for key, value in tremor_gdata.items() if key not in tremor_sdata
-    }
-    print("Length of tremor_gdata: ", len(tremor_gdata))
-    federated_data = []
-    counter = 0
-    total_length = 0
-
-    # Collect and filter data
-    for subject_id in tremor_gdata.keys():
-        if isinstance(tremor_gdata[subject_id][1], dict):
-            bag = filter_data(tremor_gdata[subject_id], E_thres, Kt)
-            if bag is not None:
-                counter += 1
-                print(f"Processed subject {counter}: {subject_id}")
-                print(f"Length of bag: {len(bag)}")
-                federated_data.append(np.array(bag))  # Add bag as a NumPy array
-                total_length += len(bag)
-
-        # Stop once we have collected num_clients bags
-        if len(federated_data) >= num_clients:
-            break
-
-    print("Total subjects processed: ", counter)
-    print("Total length of federated_data: ", total_length)
-
-    # Verify there are enough clients
-    if len(federated_data) < num_clients:
-        raise ValueError("Not enough bags to form the specified number of clients.")
-
-    # Save raw data (list of NumPy arrays)
-    os.makedirs("datasets", exist_ok=True)
-    with open("datasets/federated_data.pickle", "wb") as f:
-        pkl.dump(federated_data, f)
-
-    print("Saved federated_data to 'datasets/federated_data.pickle'")
-
-    return federated_data
 
 
 def normalize(data):
