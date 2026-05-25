@@ -7,6 +7,11 @@ contrasts subject-level embeddings produced by the encoder + attention MIL stack
 Positive pairs: two random 90% sub-samples of the same subject's windows.
 Negative pairs: all other subjects in the batch.
 
+Memory bank:
+    A MoCo-style circular queue (size ``queue_size``, default 460) stores
+    L2-normalized subject projections from recent steps as additional negatives.
+    This gives ~459 negatives per loss step instead of batch_size-1 = 3.
+
 Saved weights:
     weights/tremor/tremor_subject_simclr_embeddings.weights.h5  (encoder)
     weights/tremor/tremor_subject_simclr_attention.weights.h5   (attention layer)
@@ -58,10 +63,21 @@ C = 3              # Channels (x, y, z)
 batch_size = 4     # Subjects per batch — GPU limit: batch×K1 windows held under GradientTape
 num_epochs = 50
 temperature = 0.1
-learning_rate = 0.001
+learning_rate = 3e-4
 sample_frac = 0.75  # Fraction of subject windows to sample per view
-encoder_chunk_size = 50  # Max windows per encoder forward pass
-USE_AUGMENTATION = False   # Set to False to disable window-level augmentations
+queue_size = 64     # Memory bank: stored subject projections (≈ all 464 subjects)
+moco_momentum = 0.99  # EMA decay for key encoder: θ_k ← m·θ_k + (1−m)·θ_q
+USE_AUGMENTATION = True    # Set to False to disable stochastic augmentations (normalisation always runs)
+# Individual augmentations to include (only used when USE_AUGMENTATION = True):
+#   "flipping"             — left-to-right time-series flip (time-reversal invariance)
+#   "bidirectional_flipping" — sign flip (×-1); too strong when combined with rotation
+#   "rotation"             — random 3-D axis-angle rotation (orientation invariance)
+#   "gravity"              — add random gravity vector (mild DC-offset variation)
+#   "permute_segments"     — shuffle temporal segments (destroys tremor frequency — avoid)
+ACTIVE_AUGMENTATIONS = {"flipping", "rotation"}
+ROTATION_ANGLE = np.pi / 4  # Max rotation angle (radians). π = 180°, π/4 = 45° (safer default)
+DEBUG = False          # If True, train on a small random subset of subjects
+DEBUG_SUBJECTS = 20    # Number of subjects to use when DEBUG = True
 
 # ── Dataset ──────────────────────────────────────────────────────────────────
 
@@ -82,6 +98,13 @@ if not os.path.exists(DATASET_PATH):
 
 with open(DATASET_PATH, "rb") as f:
     subject_data = pkl.load(f)
+
+if DEBUG:
+    rng = np.random.default_rng(42)
+    debug_idx = rng.choice(len(subject_data), size=min(DEBUG_SUBJECTS, len(subject_data)), replace=False)
+    subject_data = [subject_data[i] for i in sorted(debug_idx)]
+    queue_size = min(queue_size, len(subject_data))
+    print(f"[DEBUG] Using {len(subject_data)} subjects, queue_size capped to {queue_size}.")
 
 print(f"Loaded {len(subject_data)} subjects.")
 print(f"Window counts per subject (first 5): {[len(s) for s in subject_data[:5]]}")
@@ -162,14 +185,15 @@ def build_encoder(m: int) -> keras.Sequential:
 class SubjectContrastiveModel(keras.Model):
     """Encoder + attention trained with subject-level NT-Xent contrastive loss."""
 
-    def __init__(self, m: int, k1: int, ws: int, c: int, temp: float, chunk_size: int = 256):
+    def __init__(self, m: int, k1: int, ws: int, c: int, temp: float, queue_size: int = 460, moco_momentum: float = 0.99):
         super().__init__()
         self.m = m
         self.k1 = k1
         self.ws = ws
         self.c = c
         self.temperature = temp
-        self.encoder_chunk_size = chunk_size
+        self.queue_size = queue_size
+        self.moco_momentum = moco_momentum
 
         self.encoder = build_encoder(m)
 
@@ -189,12 +213,56 @@ class SubjectContrastiveModel(keras.Model):
             name="projection_head",
         )
 
+        # ── EMA key encoder (MoCo momentum network) ──────────────────────────
+        # Updated via θ_k ← m·θ_k + (1−m)·θ_q after each step.
+        # All queue entries come from this stable, slowly-drifting encoder,
+        # ensuring queue consistency — the root cause of the erratic loss.
+        self.key_encoder = build_encoder(m)
+        self.key_attention_layer = MILAttentionLayer(
+            weight_params_dim=16,
+            kernel_regularizer=keras.regularizers.L2(0.01),
+            use_gated=False,
+            name="key_alpha",
+        )
+        self.key_projection_head = keras.Sequential(
+            [
+                keras.Input(shape=(m,)),
+                layers.Dense(m, activation="relu"),
+                layers.Dense(m),
+            ],
+            name="key_projection_head",
+        )
+
         self.contrastive_loss_tracker = keras.metrics.Mean(name="c_loss")
         self.contrastive_accuracy = keras.metrics.SparseCategoricalAccuracy(
             name="c_acc"
         )
-        # Window-level augmenter (skip shift_windows — windows are already 1000 steps)
-        self.augmenter = Augmentation().get_contrastive_augmenter()
+        # Normaliser — always applied regardless of USE_AUGMENTATION, so the
+        # encoder never sees raw-amplitude differences between subjects as a
+        # trivial shortcut.
+        self.normalizer = Augmentation.CustomNormalizer()
+
+        # Window-level augmenter — built from ACTIVE_AUGMENTATIONS set.
+        # Normalisation is intentionally NOT included here; it runs separately.
+        _aug = Augmentation(rotation_angle=ROTATION_ANGLE)
+        _aug_steps = []
+        if "flipping"               in ACTIVE_AUGMENTATIONS: _aug_steps.append(layers.Lambda(_aug.left_to_right_flipping))
+        if "bidirectional_flipping" in ACTIVE_AUGMENTATIONS: _aug_steps.append(layers.Lambda(_aug.bidirectional_flipping))
+        if "rotation"               in ACTIVE_AUGMENTATIONS: _aug_steps.append(layers.Lambda(_aug.rotate_axis))
+        if "gravity"                in ACTIVE_AUGMENTATIONS: _aug_steps.append(layers.Lambda(_aug.add_gravity))
+        if "permute_segments"       in ACTIVE_AUGMENTATIONS: _aug_steps.append(layers.Lambda(_aug.permute_segments))
+        self.augmenter = keras.Sequential(_aug_steps) if _aug_steps else None
+
+        # ── Memory bank ──────────────────────────────────────────────────────
+        # Circular queue of L2-normalized subject projections used as extra
+        # negatives.  Stored in float32 regardless of mixed-precision policy.
+        init_queue = tf.math.l2_normalize(
+            tf.random.normal((queue_size, m), dtype=tf.float32), axis=1
+        )
+        self.queue = tf.Variable(
+            init_queue, trainable=False, dtype=tf.float32, name="queue"
+        )
+        self.queue_ptr = tf.Variable(0, trainable=False, dtype=tf.int32, name="queue_ptr")
 
     # ── Forward helpers ──────────────────────────────────────────────────────
 
@@ -224,18 +292,10 @@ class SubjectContrastiveModel(keras.Model):
         Returns:
             subject_embs: (batch, m)
         """
-        n_batch = int(windows_batch.shape[0])
-        n_windows = n_batch * self.k1
-        flat = tf.reshape(windows_batch, (n_windows, self.ws, self.c))
+        flat = tf.reshape(windows_batch, (-1, self.ws, self.c))    # (batch*k1, ws, c)
 
-        # Encode windows in chunks to avoid GPU OOM
-        parts = []
-        for start in range(0, n_windows, self.encoder_chunk_size):
-            parts.append(
-                self.encoder(flat[start : start + self.encoder_chunk_size], training=training)
-            )
-        window_embs = tf.concat(parts, axis=0)                          # (n_windows, m)
-        window_embs = tf.reshape(window_embs, (n_batch, self.k1, self.m))  # (batch, k1, m)
+        window_embs = self.encoder(flat, training=training)        # (batch*k1, m)
+        window_embs = tf.reshape(window_embs, (-1, self.k1, self.m))  # (batch, k1, m)
 
         if mask is None:
             mask = self._build_mask(windows_batch)  # (batch, k1, 1)
@@ -246,29 +306,98 @@ class SubjectContrastiveModel(keras.Model):
         subject_embs = tf.reduce_sum(alpha * window_embs, axis=1)  # (batch, m)
         return subject_embs
 
+    def _encode_subjects_key(self, windows_batch: tf.Tensor, mask=None) -> tf.Tensor:
+        """Produce subject-level embeddings using the EMA key encoder.
+
+        Always runs with training=False — the key encoder is never updated by
+        backpropagation, only by the EMA momentum update rule.
+        """
+        flat = tf.reshape(windows_batch, (-1, self.ws, self.c))
+        window_embs = self.key_encoder(flat, training=False)
+        window_embs = tf.reshape(window_embs, (-1, self.k1, self.m))
+        if mask is None:
+            mask = self._build_mask(windows_batch)
+        alpha = self.key_attention_layer(window_embs, mask)
+        return tf.reduce_sum(alpha * window_embs, axis=1)
+
+    def initialize_key_encoder(self):
+        """Copy query encoder weights → key encoder.  Called once before training."""
+        for q_w, k_w in zip(self.encoder.weights, self.key_encoder.weights):
+            k_w.assign(tf.cast(q_w, k_w.dtype))
+        for q_w, k_w in zip(self.attention_layer.weights, self.key_attention_layer.weights):
+            k_w.assign(tf.cast(q_w, k_w.dtype))
+        for q_w, k_w in zip(self.projection_head.weights, self.key_projection_head.weights):
+            k_w.assign(tf.cast(q_w, k_w.dtype))
+        print("Key encoder initialized from query encoder weights.")
+
+    def _momentum_update(self):
+        """EMA update: θ_k ← moco_momentum·θ_k + (1−moco_momentum)·θ_q
+
+        Uses .weights (trainable + non-trainable) so that BatchNorm running
+        statistics (moving_mean, moving_variance) in the key encoder also track
+        the query encoder, preventing stale normalisation in the key path.
+        """
+        m = self.moco_momentum
+        for q_w, k_w in zip(self.encoder.weights, self.key_encoder.weights):
+            k_w.assign(m * k_w + (1.0 - m) * tf.cast(q_w, k_w.dtype))
+        for q_w, k_w in zip(self.attention_layer.weights, self.key_attention_layer.weights):
+            k_w.assign(m * k_w + (1.0 - m) * tf.cast(q_w, k_w.dtype))
+        for q_w, k_w in zip(self.projection_head.weights, self.key_projection_head.weights):
+            k_w.assign(m * k_w + (1.0 - m) * tf.cast(q_w, k_w.dtype))
+
     # ── NT-Xent loss ─────────────────────────────────────────────────────────
 
-    def contrastive_loss(self, proj1: tf.Tensor, proj2: tf.Tensor) -> tf.Tensor:
-        proj1 = tf.nn.l2_normalize(proj1, axis=1)
-        proj2 = tf.nn.l2_normalize(proj2, axis=1)
+    def contrastive_loss(
+        self, proj1_q: tf.Tensor, proj2_k: tf.Tensor, queue_snapshot: tf.Tensor
+    ) -> tf.Tensor:
+        """Asymmetric MoCo InfoNCE loss.
 
-        similarities = (
-            ops.matmul(proj1, ops.transpose(proj2)) / self.temperature
-        )  # (batch, batch)
+        proj1_q (query, from main encoder) is matched against proj2_k (key, from
+        EMA key encoder) as the positive, and all queue entries as negatives.
+        Gradients flow only through the query path (proj1_q).
 
-        batch = ops.shape(proj1)[0]
-        labels = ops.arange(batch)
+        Args:
+            proj1_q:        (B, M) — query projections (main encoder, gradient flows here)
+            proj2_k:        (B, M) — key projections (EMA encoder, stop_gradient applied by caller)
+            queue_snapshot: (Q, M) float32 — memory bank negatives (no gradient)
+        """
+        proj1_q = tf.nn.l2_normalize(tf.cast(proj1_q, tf.float32), axis=1)
+        proj2_k = tf.nn.l2_normalize(tf.cast(proj2_k, tf.float32), axis=1)
+
+        batch = ops.shape(proj1_q)[0]
+        labels = ops.arange(batch)  # positive for query i is key i (proj2_k[i])
+
+        # Keys: current batch positives + memory bank negatives → (B + Q, M)
+        keys = tf.concat([proj2_k, queue_snapshot], axis=0)
+
+        # (B, B+Q) similarity matrix; query i's positive is at column i
+        similarities = ops.matmul(proj1_q, ops.transpose(keys)) / self.temperature
 
         self.contrastive_accuracy.update_state(labels, similarities)
-        self.contrastive_accuracy.update_state(labels, ops.transpose(similarities))
-
-        loss_1_2 = keras.losses.sparse_categorical_crossentropy(
+        return keras.losses.sparse_categorical_crossentropy(
             labels, similarities, from_logits=True
         )
-        loss_2_1 = keras.losses.sparse_categorical_crossentropy(
-            labels, ops.transpose(similarities), from_logits=True
+
+    # ── Memory bank update ───────────────────────────────────────────────────
+
+    @tf.function
+    def _dequeue_and_enqueue(self, keys: tf.Tensor):
+        """Overwrite the oldest queue entries with new L2-normalized projections.
+
+        Args:
+            keys: (B, M) float32 — normalized subject projections to enqueue
+        """
+        batch_size = tf.shape(keys)[0]
+        ptr = self.queue_ptr
+        indices = tf.math.mod(
+            tf.range(ptr, ptr + batch_size, dtype=tf.int32), self.queue_size
         )
-        return (loss_1_2 + loss_2_1) / 2
+        self.queue.assign(
+            tf.tensor_scatter_nd_update(
+                self.queue, tf.expand_dims(indices, axis=1), keys
+            )
+        )
+        self.queue_ptr.assign(tf.math.mod(ptr + batch_size, self.queue_size))
 
     # ── Train step ───────────────────────────────────────────────────────────
 
@@ -278,45 +407,55 @@ class SubjectContrastiveModel(keras.Model):
         views1: tf.Tensor,
         views2: tf.Tensor,
         optimizer: keras.optimizers.Optimizer,
-    ) -> dict:
-        """Single gradient update on one batch of subject view pairs.
+        queue_snapshot: tf.Tensor,
+    ) -> tuple:
+        """Single gradient update — MoCo-style query/key separation.
 
-        Args:
-            views1: (batch, k1, ws, c) — first augmented view per subject
-            views2: (batch, k1, ws, c) — second augmented view per subject
-            optimizer: Keras optimizer
+        Query path  (view1, inside GradientTape):
+            view1 → encoder → attention → projection_head → proj1_q
+
+        Key path    (view2, outside GradientTape, no backprop):
+            view2 → key_encoder → key_attention → key_projection_head → proj2_k
+
+        The key encoder is EMA-updated via _momentum_update() after each step
+        (called from the training loop, not here, to avoid @tf.function issues).
 
         Returns:
-            dict with loss and accuracy values
+            (metrics_dict, proj2_k_norm) where proj2_k_norm is (B, M) float32
+            to be enqueued in the memory bank.
         """
+        # ── Masks from original views (before augmentation) ──────────────────
+        mask1 = self._build_mask(views1)
+        mask2 = self._build_mask(views2)
+
+        # ── Normalise + augment both views independently ─────────────────────
+        # Normalisation always runs to remove per-subject amplitude bias.
+        # Stochastic augmentations only run when USE_AUGMENTATION=True.
+        orig_shape = tf.shape(views1)
+        flat1 = tf.reshape(views1, (-1, self.ws, self.c))
+        flat2 = tf.reshape(views2, (-1, self.ws, self.c))
+        flat1 = self.normalizer(flat1, training=False)
+        flat2 = self.normalizer(flat2, training=False)
+        if USE_AUGMENTATION and self.augmenter is not None:
+            flat1 = self.augmenter(flat1, training=True)
+            flat2 = self.augmenter(flat2, training=True)
+        views1_aug = tf.reshape(flat1, orig_shape)
+        views2_aug = tf.reshape(flat2, orig_shape)
+
+        # ── Key path (no gradients) ───────────────────────────────────────────
+        # The key encoder variables are not in trainable_vars below, so TF won't
+        # differentiate through them regardless; stop_gradient makes intent clear.
+        embs2_k = self._encode_subjects_key(views2_aug, mask=mask2)
+        proj2_k = tf.stop_gradient(self.key_projection_head(embs2_k, training=False))
+
+        # ── Query path (with gradients) ───────────────────────────────────────
         with tf.GradientTape() as tape:
-            # Compute masks from original views BEFORE augmentation.
-            # Augmentation (especially CustomNormalizer) turns zero-padded windows
-            # into non-zero values, so the mask must be derived from the original.
-            mask1 = self._build_mask(views1)
-            mask2 = self._build_mask(views2)
+            embs1_q = self._encode_subjects(views1_aug, training=True, mask=mask1)
+            proj1_q = self.projection_head(embs1_q, training=True)
 
-            # Apply window-level augmentations independently to each window
-            # within the bag (flatten batch×K1 → augment → reshape back).
-            orig_shape = tf.shape(views1)
-            if USE_AUGMENTATION:
-                flat1 = tf.reshape(views1, (-1, self.ws, self.c))
-                flat2 = tf.reshape(views2, (-1, self.ws, self.c))
-                flat1 = self.augmenter(flat1, training=True)
-                flat2 = self.augmenter(flat2, training=True)
-                views1_aug = tf.reshape(flat1, orig_shape)
-                views2_aug = tf.reshape(flat2, orig_shape)
-            else:
-                views1_aug = views1
-                views2_aug = views2
-
-            embs1 = self._encode_subjects(views1_aug, training=True, mask=mask1)
-            embs2 = self._encode_subjects(views2_aug, training=True, mask=mask2)
-
-            proj1 = self.projection_head(embs1, training=True)
-            proj2 = self.projection_head(embs2, training=True)
-
-            loss = tf.reduce_mean(self.contrastive_loss(proj1, proj2))
+            loss = tf.reduce_mean(
+                self.contrastive_loss(proj1_q, proj2_k, queue_snapshot)
+            )
             self.contrastive_loss_tracker.update_state(loss)
 
         trainable_vars = (
@@ -327,10 +466,12 @@ class SubjectContrastiveModel(keras.Model):
         grads = tape.gradient(loss, trainable_vars)
         optimizer.apply_gradients(zip(grads, trainable_vars))
 
+        proj2_k_norm = tf.nn.l2_normalize(tf.cast(proj2_k, tf.float32), axis=1)
+
         return {
             "c_loss": self.contrastive_loss_tracker.result(),
             "c_acc": self.contrastive_accuracy.result(),
-        }
+        }, proj2_k_norm
 
 
 # ── Training loop ─────────────────────────────────────────────────────────────
@@ -385,7 +526,7 @@ def train(model: SubjectContrastiveModel, optimizer: keras.optimizers.Optimizer)
     steps_per_epoch = max(1, n_subjects // batch_size)
 
     for epoch in range(num_epochs):
-        print(f"\nEpoch {epoch + 1}/{num_epochs}")
+        print(f"\nEpoch {epoch + 1}/{num_epochs}  (lr={learning_rate:.2e})")
         model.contrastive_loss_tracker.reset_state()
         model.contrastive_accuracy.reset_state()
 
@@ -410,7 +551,11 @@ def train(model: SubjectContrastiveModel, optimizer: keras.optimizers.Optimizer)
             v1_t = tf.constant(views1)
             v2_t = tf.constant(views2)
 
-            metrics = model.train_step_contrastive(v1_t, v2_t, optimizer)
+            metrics, proj2_k_norm = model.train_step_contrastive(
+                v1_t, v2_t, optimizer, model.queue
+            )
+            model._momentum_update()           # EMA: θ_k ← m·θ_k + (1−m)·θ_q
+            model._dequeue_and_enqueue(proj2_k_norm)
 
             progbar.update(
                 step + 1,
@@ -429,16 +574,22 @@ if __name__ == "__main__":
     start = time.time()
 
     model = SubjectContrastiveModel(
-        m=M, k1=K1, ws=Ws, c=C, temp=temperature, chunk_size=encoder_chunk_size
+        m=M, k1=K1, ws=Ws, c=C, temp=temperature, queue_size=queue_size,
+        moco_momentum=moco_momentum,
     )
 
     optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
 
-    # Build the model by running one dummy batch so all weights are created
+    # Build both encoder pairs by running dummy forward passes
     dummy = np.zeros((2, K1, Ws, C), dtype=np.float32)
     dummy_t = tf.constant(dummy)
     _ = model._encode_subjects(dummy_t, training=False)
+    _ = model._encode_subjects_key(dummy_t)
     _ = model.projection_head(tf.zeros((2, M), dtype=tf.float32))
+    _ = model.key_projection_head(tf.zeros((2, M), dtype=tf.float32))
+
+    # Seed key encoder with the same initial weights as the query encoder
+    model.initialize_key_encoder()
 
     model.encoder.summary()
     model.projection_head.summary()
