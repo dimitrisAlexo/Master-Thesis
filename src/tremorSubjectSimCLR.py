@@ -63,7 +63,7 @@ M = 64             # Embedding dimension
 Ws = 1000          # Window length (time steps)
 C = 3              # Channels (x, y, z)
 batch_size = 4     # Subjects per batch — GPU limit: batch×K1 windows held under GradientTape
-num_epochs = 50
+num_epochs = 100
 temperature = 0.1
 learning_rate = 3e-4
 sample_frac = 0.75  # Fraction of subject windows to sample per view
@@ -76,11 +76,11 @@ USE_AUGMENTATION = True    # Set to False to disable stochastic augmentations (n
 #   "rotation"             — random 3-D axis-angle rotation (orientation invariance)
 #   "gravity"              — add random gravity vector (mild DC-offset variation)
 #   "permute_segments"     — shuffle temporal segments (destroys tremor frequency — avoid)
-ACTIVE_AUGMENTATIONS = {"flipping", "rotation"}
+ACTIVE_AUGMENTATIONS = {"flipping", "rotation", "permute_segments", "gravity", "bidirectional_flipping"}
 ROTATION_ANGLE = np.pi / 4  # Max rotation angle (radians). π = 180°, π/4 = 45° (safer default)
 DEBUG = False          # If True, train on a small random subset of subjects
 DEBUG_SUBJECTS = 20    # Number of subjects to use when DEBUG = True
-USE_TRAINING = False    # If False, skip training and load saved weights for t-SNE visualization
+USE_TRAINING = True    # If False, skip training and load saved weights for t-SNE visualization
 
 # ── Dataset ──────────────────────────────────────────────────────────────────
 
@@ -431,17 +431,20 @@ class SubjectContrastiveModel(keras.Model):
         mask1 = self._build_mask(views1)
         mask2 = self._build_mask(views2)
 
-        # ── Normalise + augment both views independently ─────────────────────
-        # Normalisation always runs to remove per-subject amplitude bias.
-        # Stochastic augmentations only run when USE_AUGMENTATION=True.
+        # ── Augment then normalise (exact tremorSimCLR.get_contrastive_augmenter
+        # order: stochastic augs first, CustomNormalizer last) ────────────────
+        # Stochastic augmentations only run when USE_AUGMENTATION=True;
+        # normalisation always runs last so the encoder always sees [-1, 1]
+        # inputs (e.g. the add_gravity DC offset gets squashed back in, as in the
+        # window-level recipe that improved end-task F1).
         orig_shape = tf.shape(views1)
         flat1 = tf.reshape(views1, (-1, self.ws, self.c))
         flat2 = tf.reshape(views2, (-1, self.ws, self.c))
-        flat1 = self.normalizer(flat1, training=False)
-        flat2 = self.normalizer(flat2, training=False)
         if USE_AUGMENTATION and self.augmenter is not None:
             flat1 = self.augmenter(flat1, training=True)
             flat2 = self.augmenter(flat2, training=True)
+        flat1 = self.normalizer(flat1, training=False)
+        flat2 = self.normalizer(flat2, training=False)
         views1_aug = tf.reshape(flat1, orig_shape)
         views2_aug = tf.reshape(flat2, orig_shape)
 
@@ -524,9 +527,100 @@ def build_batch(
     return views1, views2
 
 
-def train(model: SubjectContrastiveModel, optimizer: keras.optimizers.Optimizer):
+# ── Validation / model-selection helpers ──────────────────────────────────────
+
+
+def _pad_bags(bags: list) -> np.ndarray:
+    """Pad/truncate a list of subject window-bags to (N, K1, Ws, C)."""
+    out = np.zeros((len(bags), K1, Ws, C), dtype=np.float32)
+    for i, bag in enumerate(bags):
+        bag = np.array(bag, dtype=np.float32)
+        n = min(len(bag), K1)
+        out[i, :n] = bag[:n]
+    return out
+
+
+def encode_bags(model: SubjectContrastiveModel, bags_padded: np.ndarray, infer_batch: int = 4) -> np.ndarray:
+    """Frozen subject-level embeddings for padded bags, (N, M).
+
+    The mask is built from the RAW bag before normalising (CustomNormalizer maps
+    all-zero padding to all -1, which would otherwise look like real windows).
+    """
+    embs_list = []
+    for i in range(0, len(bags_padded), infer_batch):
+        chunk_raw = tf.constant(bags_padded[i : i + infer_batch])
+        mask = model._build_mask(chunk_raw)
+        flat = tf.reshape(chunk_raw, (-1, Ws, C))
+        flat_norm = model.normalizer(flat, training=False)
+        chunk_norm = tf.reshape(flat_norm, (-1, K1, Ws, C))
+        embs = model._encode_subjects(chunk_norm, training=False, mask=mask)
+        embs_list.append(embs.numpy())
+    return np.concatenate(embs_list, axis=0).astype(np.float32)
+
+
+def loso_probe_auc(embeddings: np.ndarray, labels: np.ndarray) -> float:
+    """Leave-one-subject-out logistic-probe AUC — tremor separability of the rep."""
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.model_selection import LeaveOneOut
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.metrics import roc_auc_score
+
+    y = labels.astype(int)
+    prob = np.zeros(len(y))
+    for tr, te in LeaveOneOut().split(embeddings):
+        sc = StandardScaler().fit(embeddings[tr])
+        clf = LogisticRegression(max_iter=2000, class_weight="balanced").fit(
+            sc.transform(embeddings[tr]), y[tr]
+        )
+        prob[te] = clf.predict_proba(sc.transform(embeddings[te]))[:, 1]
+    return roc_auc_score(y, prob)
+
+
+def load_validation_subjects() -> tuple:
+    """Labeled subjects to use for epoch selection during pretraining.
+
+    Excludes the final-evaluation subjects (the tremor∩typing 'common' subjects in
+    fusion_dataset.pickle) so that selecting the best epoch on this set does NOT
+    leak label information into the final LOSO evaluation. Returns (bags_padded, labels).
+    """
+    with open("datasets/sdataset.pickle", "rb") as f:
+        labeled_df = pkl.load(f)
+
+    common_ids = set()
+    try:
+        with open("datasets/fusion_dataset.pickle", "rb") as f:
+            common_ids = set(pkl.load(f)["subject_id"].tolist())
+    except FileNotFoundError:
+        print("WARNING: fusion_dataset.pickle not found — validating on ALL labeled "
+              "subjects, which may leak into the final evaluation.")
+
+    sids = labeled_df["subject_id"].tolist()
+    keep = [i for i, sid in enumerate(sids) if sid not in common_ids]
+    labels = np.array(labeled_df["y_train"].tolist())[keep]
+    bags_padded = _pad_bags([labeled_df["X"].tolist()[i] for i in keep])
+    print(f"Validation set: {len(keep)} labeled subjects "
+          f"(excluded {len(sids) - len(keep)} final-eval subjects); "
+          f"label balance = {np.bincount(labels).tolist()}")
+    return bags_padded, labels
+
+
+def train(
+    model: SubjectContrastiveModel,
+    optimizer: keras.optimizers.Optimizer,
+    val_bags: np.ndarray = None,
+    val_labels: np.ndarray = None,
+    encoder_path: str = None,
+    attention_path: str = None,
+) -> float:
+    """Contrastive pretraining loop.
+
+    If a validation set is given, after each epoch the encoder + attention are
+    scored by LOSO probe AUC on the held-out labeled subjects and the best-AUC
+    weights are checkpointed. Returns the best AUC (-1.0 if no validation set).
+    """
     n_subjects = len(subject_data)
     steps_per_epoch = max(1, n_subjects // batch_size)
+    best_auc = -1.0
 
     for epoch in range(num_epochs):
         print(f"\nEpoch {epoch + 1}/{num_epochs}  (lr={learning_rate:.2e})")
@@ -570,6 +664,21 @@ def train(model: SubjectContrastiveModel, optimizer: keras.optimizers.Optimizer)
 
         prefetch_thread.join()
 
+        # ── Epoch selection: LOSO probe AUC on held-out labeled subjects ──────
+        if val_bags is not None:
+            val_auc = loso_probe_auc(encode_bags(model, val_bags), val_labels)
+            tag = ""
+            if val_auc > best_auc:
+                best_auc = val_auc
+                os.makedirs("weights/tremor", exist_ok=True)
+                model.encoder.save_weights(encoder_path)
+                with open(attention_path, "wb") as f:
+                    pkl.dump(model.attention_layer.get_weights(), f)
+                tag = "  ✓ new best — checkpoint saved"
+            print(f"  val LOSO probe AUC = {val_auc:.3f}  (best {best_auc:.3f}){tag}")
+
+    return best_auc
+
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
@@ -601,16 +710,28 @@ if __name__ == "__main__":
         model.encoder.summary()
         model.projection_head.summary()
 
-        train(model, optimizer)
-
-        # ── Save weights ─────────────────────────────────────────────────────
+        # Held-out labeled subjects for epoch selection (excludes the 22 final-eval
+        # subjects to avoid leakage). Best-AUC weights are checkpointed inside train().
+        val_bags, val_labels = load_validation_subjects()
         os.makedirs("weights/tremor", exist_ok=True)
 
-        model.encoder.save_weights(encoder_path)
-        with open(attention_path, "wb") as f:
-            pkl.dump(model.attention_layer.get_weights(), f)
+        best_auc = train(
+            model, optimizer, val_bags, val_labels, encoder_path, attention_path
+        )
 
-        print(f"\nEncoder weights saved to '{encoder_path}'")
+        if best_auc < 0:
+            # No validation set was available — fall back to saving the final epoch.
+            model.encoder.save_weights(encoder_path)
+            with open(attention_path, "wb") as f:
+                pkl.dump(model.attention_layer.get_weights(), f)
+        else:
+            # Reload the best checkpoint so the t-SNE below reflects the SAVED weights.
+            model.encoder.load_weights(encoder_path)
+            with open(attention_path, "rb") as f:
+                model.attention_layer.set_weights(pkl.load(f))
+
+        print(f"\nBest validation LOSO probe AUC: {best_auc:.3f}")
+        print(f"Encoder weights saved to '{encoder_path}'")
         print(f"Attention weights saved to '{attention_path}'")
         print(f"Total training time: {(time.time() - start) / 60:.1f} min")
     else:
@@ -636,26 +757,50 @@ if __name__ == "__main__":
         n = min(len(bag), K1)
         bags_padded[i, :n] = bag[:n]
 
-    # Encode subjects in small batches to avoid OOM
+    # Encode subjects in small batches to avoid OOM.
+    # Build the mask from the RAW chunk BEFORE normalising: CustomNormalizer maps
+    # all-zero padding to all -1, which would look like real windows to _build_mask.
     infer_batch = 4
     subject_embs_list = []
     for i in range(0, len(bags_padded), infer_batch):
-        chunk = tf.constant(bags_padded[i : i + infer_batch])
-        flat = tf.reshape(chunk, (-1, Ws, C))
+        chunk_raw = tf.constant(bags_padded[i : i + infer_batch])
+        mask = model._build_mask(chunk_raw)
+        flat = tf.reshape(chunk_raw, (-1, Ws, C))
         flat_norm = model.normalizer(flat, training=False)
         chunk_norm = tf.reshape(flat_norm, (-1, K1, Ws, C))
-        embs = model._encode_subjects(chunk_norm, training=False)
+        embs = model._encode_subjects(chunk_norm, training=False, mask=mask)
         subject_embs_list.append(embs.numpy())
     embeddings = np.concatenate(subject_embs_list, axis=0).astype(np.float32)
     print(f"Subject embeddings shape: {embeddings.shape}")
 
-    perplexity = min(30, len(embeddings) - 1)
-    reduced = TSNE(n_components=2, perplexity=perplexity, random_state=42).fit_transform(embeddings)
+    # ── Quantitative separability (the real diagnostic) ───────────────────────
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.model_selection import LeaveOneOut
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.metrics import roc_auc_score
+
+    y_probe = labels_np.astype(int)
+    loo = LeaveOneOut()
+    probe_prob = np.zeros(len(y_probe))
+    for tr, te in loo.split(embeddings):
+        sc = StandardScaler().fit(embeddings[tr])
+        clf = LogisticRegression(max_iter=2000, class_weight="balanced").fit(
+            sc.transform(embeddings[tr]), y_probe[tr]
+        )
+        probe_prob[te] = clf.predict_proba(sc.transform(embeddings[te]))[:, 1]
+    probe_auc = roc_auc_score(y_probe, probe_prob)
+    probe_acc = ((probe_prob > 0.5).astype(int) == y_probe).mean()
+    print(f"LOSO linear-probe on frozen embeddings: AUC={probe_auc:.3f}  acc={probe_acc:.3f}")
+
+    # ── t-SNE visualization (qualitative only) ────────────────────────────────
+    embeddings_std = StandardScaler().fit_transform(embeddings)
+    perplexity = max(2, min(30, len(embeddings) // 3))
+    reduced = TSNE(n_components=2, perplexity=perplexity, random_state=42).fit_transform(embeddings_std)
 
     plt.figure(figsize=(10, 8))
     plt.scatter(reduced[labels_np == 0, 0], reduced[labels_np == 0, 1], label="No tremor", c="b", alpha=0.5)
     plt.scatter(reduced[labels_np == 1, 0], reduced[labels_np == 1, 1], label="Tremor", c="r", alpha=0.5)
-    plt.title("t-SNE — Subject SimCLR Embeddings (attention-aggregated)")
+    plt.title(f"t-SNE — Subject Tremor SimCLR Embeddings (perplexity={perplexity}, probe AUC={probe_auc:.2f})")
     plt.xlabel("t-SNE Dimension 1")
     plt.ylabel("t-SNE Dimension 2")
     plt.legend()
