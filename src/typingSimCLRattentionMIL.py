@@ -441,7 +441,48 @@ def train(
         )
         return model
 
-    # simclr/subject_simclr: freeze encoder, train, then unfreeze and fine-tune
+    # if current_mode == "subject_simclr":
+    #     # Both encoder and attention are pretrained jointly. Freeze both, train
+    #     # only the classifier head first, then unfreeze everything and fine-tune.
+    #     model.freeze_encoder()
+    #     model.attention_layer.trainable = False
+    #     model.compile(
+    #         optimizer=optimizers.Adam(learning_rate=1e-3),
+    #         loss="sparse_categorical_crossentropy",
+    #         metrics=["accuracy"],
+    #         auto_scale_loss=True,
+    #         run_eagerly=False,
+    #     )
+    #     model.fit(
+    #         train_dataset,
+    #         validation_data=val_dataset,
+    #         epochs=50,
+    #         batch_size=batch_size,
+    #         callbacks=[lr_scheduler, clear_memory],
+    #         verbose=1,
+    #     )
+
+    #     print("Finetuning model...")
+    #     model.unfreeze_encoder()
+    #     model.attention_layer.trainable = True
+    #     model.compile(
+    #         optimizer=optimizers.Adam(learning_rate=1e-4),
+    #         loss="sparse_categorical_crossentropy",
+    #         metrics=["accuracy"],
+    #         auto_scale_loss=True,
+    #         run_eagerly=False,
+    #     )
+    #     model.fit(
+    #         train_dataset,
+    #         validation_data=val_dataset,
+    #         epochs=100,
+    #         batch_size=batch_size,
+    #         callbacks=[lr_scheduler, clear_memory],
+    #         verbose=1,
+    #     )
+    #     return model
+
+    # simclr: freeze encoder, train, then unfreeze and fine-tune
     model.freeze_encoder()
     model.compile(
         optimizer=optimizers.Adam(learning_rate=5e-4),
