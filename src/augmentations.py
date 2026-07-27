@@ -67,147 +67,69 @@ class Augmentation:
         return output
 
     def rotate_axis(self, data):
-        # Generate a random rotation matrix for each sample in the batch
-        def rotate_single_sample(sample):
-            # Generate a random axis for rotation (normalized) per sample
-            axis = tf.random.uniform([3], minval=-1.0, maxval=1.0, dtype=tf.float32)
-            axis = axis / tf.norm(axis)
+        data = tf.cast(data, tf.float32)
+        batch_size = tf.shape(data)[0]
 
-            # Generate a random rotation angle per sample
-            angle = tf.random.uniform(
-                [],
-                minval=-self.rotation_angle,
-                maxval=self.rotation_angle,
-                dtype=tf.float32,
-            )
-
-            # Compute components of the rotation matrix using the axis-angle formula
-            cos_angle = tf.cos(angle)
-            sin_angle = tf.sin(angle)
-            one_minus_cos = 1.0 - cos_angle
-
-            x, y, z = axis[0], axis[1], axis[2]
-
-            # Rotation matrix for an arbitrary axis (Rodrigues' rotation formula)
-            rotation_matrix = tf.convert_to_tensor(
-                [
-                    [
-                        cos_angle + x * x * one_minus_cos,
-                        x * y * one_minus_cos - z * sin_angle,
-                        x * z * one_minus_cos + y * sin_angle,
-                    ],
-                    [
-                        y * x * one_minus_cos + z * sin_angle,
-                        cos_angle + y * y * one_minus_cos,
-                        y * z * one_minus_cos - x * sin_angle,
-                    ],
-                    [
-                        z * x * one_minus_cos - y * sin_angle,
-                        z * y * one_minus_cos + x * sin_angle,
-                        cos_angle + z * z * one_minus_cos,
-                    ],
-                ],
-                dtype=tf.float32,
-            )
-
-            # Apply the rotation matrix to the sample
-            sample = tf.cast(sample, tf.float32)
-            return tf.linalg.matmul(sample, rotation_matrix)
-
-        # Apply the rotate_single_sample function to each sample in the batch using tf.map_fn
-        rotated_batch = tf.map_fn(
-            rotate_single_sample, data, fn_output_signature=tf.float32
+        # Sample a random unit axis and angle for every batch element at once —
+        # no per-sample Python loop, fully XLA-compatible.
+        axes = tf.random.uniform([batch_size, 3], minval=-1.0, maxval=1.0, dtype=tf.float32)
+        axes = axes / tf.norm(axes, axis=1, keepdims=True)
+        angles = tf.random.uniform(
+            [batch_size], minval=-self.rotation_angle, maxval=self.rotation_angle, dtype=tf.float32
         )
 
-        return rotated_batch
+        cos_a = tf.cos(angles)      # (B,)
+        sin_a = tf.sin(angles)      # (B,)
+        omc   = 1.0 - cos_a         # (B,)
+        x, y, z = axes[:, 0], axes[:, 1], axes[:, 2]
+
+        # Build (B, 3, 3) rotation matrices via Rodrigues' formula (vectorised)
+        row0 = tf.stack([cos_a + x*x*omc,   x*y*omc - z*sin_a, x*z*omc + y*sin_a], axis=1)
+        row1 = tf.stack([y*x*omc + z*sin_a, cos_a + y*y*omc,   y*z*omc - x*sin_a], axis=1)
+        row2 = tf.stack([z*x*omc - y*sin_a, z*y*omc + x*sin_a, cos_a + z*z*omc  ], axis=1)
+        R = tf.stack([row0, row1, row2], axis=1)  # (B, 3, 3)
+
+        # data: (B, T, 3)  @  R: (B, 3, 3)  →  (B, T, 3)
+        return tf.matmul(data, R)
 
     def add_gravity(self, data):
-        """
-        Adds a random gravity component to the 3D accelerometer data.
-        """
+        """Adds a random gravity component to the 3D accelerometer data."""
+        data = tf.cast(data, tf.float32)
+        batch_size = tf.shape(data)[0]
 
-        def add_gravity_to_sample(sample):
-            # Generate a random direction vector (normalized) for gravity
-            gravity_direction = tf.random.uniform(
-                [3], minval=-1.0, maxval=1.0, dtype=tf.float32
-            )
-            gravity_direction = gravity_direction / tf.norm(gravity_direction)
+        # Generate one gravity vector per sample, all at once (no map_fn)
+        dirs = tf.random.uniform([batch_size, 3], minval=-1.0, maxval=1.0, dtype=tf.float32)
+        dirs = dirs / tf.norm(dirs, axis=1, keepdims=True)
+        gravity = self.gravity_factor * 10.0 * dirs  # (B, 3)
 
-            # Calculate the gravity vector with the specified magnitude
-            gravity_magnitude = self.gravity_factor * 10.0  # assuming g = 10 m/s^2
-            gravity_vector = gravity_magnitude * gravity_direction
-
-            # Add the gravity vector to each time step of the sample
-            sample = tf.cast(sample, tf.float32)
-            gravity_vector = tf.cast(gravity_vector, tf.float32)
-            return sample + gravity_vector
-
-        # Apply the add_gravity_to_sample function to each sample in the batch using tf.map_fn
-        gravity_augmented_batch = tf.map_fn(
-            add_gravity_to_sample, data, fn_output_signature=tf.float32
-        )
-
-        return gravity_augmented_batch
+        # Broadcast over time axis: (B, 1, 3) added to (B, T, 3)
+        return data + gravity[:, tf.newaxis, :]
 
     def permute_segments(self, data):
-        """
-        Permute segments of the input data along the time axis.
-        """
-        batch_size, time_steps, channels = (
-            tf.shape(data)[0],
-            tf.shape(data)[1],
-            tf.shape(data)[2],
-        )
+        """Permute segments of the input data along the time axis."""
+        batch_size = tf.shape(data)[0]
+        time_steps = tf.shape(data)[1]
+        channels   = tf.shape(data)[2]
+        n_full     = self.n_perm_seg - 1  # Python int — known at trace time
 
-        # Calculate the divisor and remainder
-        divisor = time_steps // self.n_perm_seg
+        divisor  = time_steps // self.n_perm_seg
         remainder = time_steps % self.n_perm_seg
 
-        # tf.print("divisor: ", divisor)
-        # tf.print("remainder: ", remainder)
-
-        # Reshape the first n_perm_seg - 1 segments with size divisor
-        reshaped_data_1 = tf.reshape(
-            data[:, : divisor * (self.n_perm_seg - 1), :],
-            [batch_size, self.n_perm_seg - 1, divisor, channels],
+        # (B, n_full, divisor, C)
+        segments = tf.reshape(
+            data[:, : divisor * n_full, :],
+            [batch_size, n_full, divisor, channels],
         )
+        last = data[:, divisor * n_full:, :]  # (B, divisor+remainder, C)
 
-        # tf.print("reshaped_data_1 shape: ", tf.shape(reshaped_data_1))
+        # Vectorised batch permutation: argsort of uniform noise → random perm per sample
+        perm_indices = tf.argsort(tf.random.uniform([batch_size, n_full]), axis=1)  # (B, n_full)
+        batch_idx  = tf.tile(tf.range(batch_size)[:, tf.newaxis], [1, n_full])
+        gather_idx = tf.stack([batch_idx, perm_indices], axis=2)   # (B, n_full, 2)
+        permuted   = tf.gather_nd(segments, gather_idx)            # (B, n_full, divisor, C)
 
-        # Reshape the last segment to include the remainder (divisor + remainder)
-        last_segment_start = divisor * (self.n_perm_seg - 1)
-        reshaped_data_2 = tf.reshape(
-            data[:, last_segment_start:, :], [batch_size, divisor + remainder, channels]
-        )
-
-        # tf.print("reshaped_data_2 shape: ", tf.shape(reshaped_data_2))
-
-        # Generate a random permutation of the segment indices for each sample in the batch
-        permuted_indices = tf.map_fn(
-            lambda _: tf.random.shuffle(tf.range(self.n_perm_seg - 1)),
-            tf.zeros([batch_size], dtype=tf.int32),
-            fn_output_signature=tf.int32,
-        )
-
-        # Gather the segments in the new permuted order for each batch
-        permuted_data = tf.map_fn(
-            lambda x: tf.gather(x[0], x[1]),
-            (reshaped_data_1, permuted_indices),
-            fn_output_signature=tf.float32,
-        )
-
-        # Reshape back to the original shape (batch_size, time_steps, channels)
-        permuted_data = tf.reshape(
-            permuted_data, [batch_size, time_steps - divisor - remainder, channels]
-        )
-
-        # tf.print("permuted_data shape: ", tf.shape(permuted_data))
-
-        permuted_data = tf.concat([permuted_data, reshaped_data_2], axis=1)
-
-        # tf.print("permuted_data shape: ", tf.shape(permuted_data))
-
-        return permuted_data
+        permuted_flat = tf.reshape(permuted, [batch_size, divisor * n_full, channels])
+        return tf.concat([permuted_flat, last], axis=1)
 
     def shift_windows_fun(self, data):
         """

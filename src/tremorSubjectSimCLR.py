@@ -4,13 +4,16 @@ tremorSubjectSimCLR.py — Subject-level SimCLR pretraining for the tremor branc
 Instead of contrasting individual windows (as in tremorSimCLR.py), this script
 contrasts subject-level embeddings produced by the encoder + attention MIL stack.
 
-Positive pairs: two random 90% sub-samples of the same subject's windows.
+Positive pairs: two disjoint halves of the same subject's windows
+(or two random overlapping sub-samples when DISJOINT_VIEWS = False).
 Negative pairs: all other subjects in the batch.
 
 Memory bank:
-    A MoCo-style circular queue (size ``queue_size``, default 460) stores
+    A MoCo-style circular queue (size ``queue_size``, default 128) stores
     L2-normalized subject projections from recent steps as additional negatives.
-    This gives ~459 negatives per loss step instead of batch_size-1 = 3.
+    Subject indices are stored alongside the keys so that queue entries belonging
+    to a subject present in the current batch are masked out of the loss
+    (false-negative removal).
 
 Saved weights:
     weights/tremor/tremor_subject_simclr_embeddings.weights.h5  (encoder)
@@ -52,9 +55,9 @@ if tf.config.list_physical_devices("GPU"):
 else:
     print("Using CPU...")
 
-policy = mixed_precision.Policy("mixed_float16")
+policy = mixed_precision.Policy("float32")
 mixed_precision.set_global_policy(policy)
-print("Using mixed precision...")
+print("Using float32 precision...")
 
 # ── Hyperparameters ──────────────────────────────────────────────────────────
 
@@ -63,21 +66,23 @@ M = 64             # Embedding dimension
 Ws = 1000          # Window length (time steps)
 C = 3              # Channels (x, y, z)
 batch_size = 4     # Subjects per batch — GPU limit: batch×K1 windows held under GradientTape
-num_epochs = 100
+num_epochs = 150
 temperature = 0.1
-learning_rate = 3e-4
-sample_frac = 0.75  # Fraction of subject windows to sample per view
+learning_rate = 2e-4
+sample_frac = 0.90  # Fraction of subject windows to sample per view (only used when
+                    # DISJOINT_VIEWS = False)
+DISJOINT_VIEWS = False  # The two views are non-overlapping halves of the subject's
+                       # windows
 queue_size = 64     # Memory bank: stored subject projections (≈ all 464 subjects)
 moco_momentum = 0.99  # EMA decay for key encoder: θ_k ← m·θ_k + (1−m)·θ_q
 USE_AUGMENTATION = True    # Set to False to disable stochastic augmentations (normalisation always runs)
 # Individual augmentations to include (only used when USE_AUGMENTATION = True):
-#   "flipping"             — left-to-right time-series flip (time-reversal invariance)
-#   "bidirectional_flipping" — sign flip (×-1); too strong when combined with rotation
-#   "rotation"             — random 3-D axis-angle rotation (orientation invariance)
-#   "gravity"              — add random gravity vector (mild DC-offset variation)
-#   "permute_segments"     — shuffle temporal segments (destroys tremor frequency — avoid)
-ACTIVE_AUGMENTATIONS = {"flipping", "rotation", "permute_segments", "gravity", "bidirectional_flipping"}
-ROTATION_ANGLE = np.pi / 4  # Max rotation angle (radians). π = 180°, π/4 = 45° (safer default)
+#   "flipping"             — left-to-right time-series flip
+#   "bidirectional_flipping" — sign flip (×-1);
+#   "rotation"             — random 3-D axis-angle rotation
+#   "gravity"              — add random gravity vector
+#   "permute_segments"     — shuffle temporal segments
+ACTIVE_AUGMENTATIONS = {"flipping", "rotation", "gravity", "permute_segments"}
 DEBUG = False          # If True, train on a small random subset of subjects
 DEBUG_SUBJECTS = 20    # Number of subjects to use when DEBUG = True
 USE_TRAINING = True    # If False, skip training and load saved weights for t-SNE visualization
@@ -130,8 +135,26 @@ def create_subject_view(windows: np.ndarray, k1: int, frac: float) -> tuple:
     n = len(windows)
     n_sample = max(1, int(n * frac))
     idx = np.random.choice(n, size=n_sample, replace=False)
-    sampled = windows[idx]  # (n_sample, Ws, C)
+    return _pad_view(windows[idx], k1)
 
+
+def create_subject_view_pair(windows: np.ndarray, k1: int) -> tuple:
+    """Split a subject's windows into two disjoint halves (random partition).
+
+    The views share no windows, so matching them requires capturing the
+    subject's window-invariant tremor characteristics.
+
+    Returns:
+        (view1, mask1), (view2, mask2) — each view shaped (k1, Ws, C)
+    """
+    n = len(windows)
+    perm = np.random.permutation(n)
+    half = n // 2
+    return _pad_view(windows[perm[half:]], k1), _pad_view(windows[perm[:half]], k1)
+
+
+def _pad_view(sampled: np.ndarray, k1: int) -> tuple:
+    n_sample = len(sampled)
     if n_sample >= k1:
         view = sampled[:k1]
         mask = np.ones(k1, dtype=bool)
@@ -247,7 +270,7 @@ class SubjectContrastiveModel(keras.Model):
 
         # Window-level augmenter — built from ACTIVE_AUGMENTATIONS set.
         # Normalisation is intentionally NOT included here; it runs separately.
-        _aug = Augmentation(rotation_angle=ROTATION_ANGLE)
+        _aug = Augmentation()
         _aug_steps = []
         if "flipping"               in ACTIVE_AUGMENTATIONS: _aug_steps.append(layers.Lambda(_aug.left_to_right_flipping))
         if "bidirectional_flipping" in ACTIVE_AUGMENTATIONS: _aug_steps.append(layers.Lambda(_aug.bidirectional_flipping))
@@ -264,6 +287,11 @@ class SubjectContrastiveModel(keras.Model):
         )
         self.queue = tf.Variable(
             init_queue, trainable=False, dtype=tf.float32, name="queue"
+        )
+        # Subject index of each queue entry (-1 = random init, never matches a
+        # real subject). Used to mask out false negatives in the loss.
+        self.queue_labels = tf.Variable(
+            tf.fill((queue_size,), -1), trainable=False, dtype=tf.int32, name="queue_labels"
         )
         self.queue_ptr = tf.Variable(0, trainable=False, dtype=tf.int32, name="queue_ptr")
 
@@ -351,7 +379,12 @@ class SubjectContrastiveModel(keras.Model):
     # ── NT-Xent loss ─────────────────────────────────────────────────────────
 
     def contrastive_loss(
-        self, proj1_q: tf.Tensor, proj2_k: tf.Tensor, queue_snapshot: tf.Tensor
+        self,
+        proj1_q: tf.Tensor,
+        proj2_k: tf.Tensor,
+        queue_snapshot: tf.Tensor,
+        queue_labels: tf.Tensor,
+        subject_ids: tf.Tensor,
     ) -> tf.Tensor:
         """Asymmetric MoCo InfoNCE loss.
 
@@ -363,6 +396,8 @@ class SubjectContrastiveModel(keras.Model):
             proj1_q:        (B, M) — query projections (main encoder, gradient flows here)
             proj2_k:        (B, M) — key projections (EMA encoder, stop_gradient applied by caller)
             queue_snapshot: (Q, M) float32 — memory bank negatives (no gradient)
+            queue_labels:   (Q,) int32 — subject id of each queue entry
+            subject_ids:    (B,) int32 — subject id of each query in the batch
         """
         proj1_q = tf.nn.l2_normalize(tf.cast(proj1_q, tf.float32), axis=1)
         proj2_k = tf.nn.l2_normalize(tf.cast(proj2_k, tf.float32), axis=1)
@@ -376,6 +411,15 @@ class SubjectContrastiveModel(keras.Model):
         # (B, B+Q) similarity matrix; query i's positive is at column i
         similarities = ops.matmul(proj1_q, ops.transpose(keys)) / self.temperature
 
+        # Mask out queue entries from the same subject as the query (false
+        # negatives that survive in the queue across epoch boundaries).
+        collisions = tf.equal(
+            tf.expand_dims(subject_ids, 1), tf.expand_dims(queue_labels, 0)
+        )  # (B, Q)
+        queue_penalty = tf.where(collisions, -1e9, 0.0)
+        penalty = tf.concat([tf.zeros((batch, batch)), queue_penalty], axis=1)
+        similarities = similarities + penalty
+
         self.contrastive_accuracy.update_state(labels, similarities)
         return keras.losses.sparse_categorical_crossentropy(
             labels, similarities, from_logits=True
@@ -384,11 +428,12 @@ class SubjectContrastiveModel(keras.Model):
     # ── Memory bank update ───────────────────────────────────────────────────
 
     @tf.function
-    def _dequeue_and_enqueue(self, keys: tf.Tensor):
+    def _dequeue_and_enqueue(self, keys: tf.Tensor, subject_ids: tf.Tensor):
         """Overwrite the oldest queue entries with new L2-normalized projections.
 
         Args:
-            keys: (B, M) float32 — normalized subject projections to enqueue
+            keys:        (B, M) float32 — normalized subject projections to enqueue
+            subject_ids: (B,) int32 — subject id of each enqueued projection
         """
         batch_size = tf.shape(keys)[0]
         ptr = self.queue_ptr
@@ -398,6 +443,11 @@ class SubjectContrastiveModel(keras.Model):
         self.queue.assign(
             tf.tensor_scatter_nd_update(
                 self.queue, tf.expand_dims(indices, axis=1), keys
+            )
+        )
+        self.queue_labels.assign(
+            tf.tensor_scatter_nd_update(
+                self.queue_labels, tf.expand_dims(indices, axis=1), subject_ids
             )
         )
         self.queue_ptr.assign(tf.math.mod(ptr + batch_size, self.queue_size))
@@ -411,6 +461,8 @@ class SubjectContrastiveModel(keras.Model):
         views2: tf.Tensor,
         optimizer: keras.optimizers.Optimizer,
         queue_snapshot: tf.Tensor,
+        queue_labels: tf.Tensor,
+        subject_ids: tf.Tensor,
     ) -> tuple:
         """Single gradient update — MoCo-style query/key separation.
 
@@ -460,7 +512,9 @@ class SubjectContrastiveModel(keras.Model):
             proj1_q = self.projection_head(embs1_q, training=True)
 
             loss = tf.reduce_mean(
-                self.contrastive_loss(proj1_q, proj2_k, queue_snapshot)
+                self.contrastive_loss(
+                    proj1_q, proj2_k, queue_snapshot, queue_labels, subject_ids
+                )
             )
             self.contrastive_loss_tracker.update_state(loss)
 
@@ -501,7 +555,7 @@ def _prefetch_worker(
             out_queue.put(None)
             continue
         views1, views2 = build_batch(subject_data, batch_idx, k1, ws, c, frac)
-        out_queue.put((views1, views2))
+        out_queue.put((views1, views2, batch_idx.astype(np.int32)))
 
 
 def build_batch(
@@ -519,108 +573,20 @@ def build_batch(
 
     for i, idx in enumerate(batch_indices):
         windows = subject_data[idx].astype(np.float32)
-        v1, _ = create_subject_view(windows, k1, frac)
-        v2, _ = create_subject_view(windows, k1, frac)
+        if DISJOINT_VIEWS:
+            (v1, _), (v2, _) = create_subject_view_pair(windows, k1)
+        else:
+            v1, _ = create_subject_view(windows, k1, frac)
+            v2, _ = create_subject_view(windows, k1, frac)
         views1[i] = v1
         views2[i] = v2
 
     return views1, views2
 
 
-# ── Validation / model-selection helpers ──────────────────────────────────────
-
-
-def _pad_bags(bags: list) -> np.ndarray:
-    """Pad/truncate a list of subject window-bags to (N, K1, Ws, C)."""
-    out = np.zeros((len(bags), K1, Ws, C), dtype=np.float32)
-    for i, bag in enumerate(bags):
-        bag = np.array(bag, dtype=np.float32)
-        n = min(len(bag), K1)
-        out[i, :n] = bag[:n]
-    return out
-
-
-def encode_bags(model: SubjectContrastiveModel, bags_padded: np.ndarray, infer_batch: int = 4) -> np.ndarray:
-    """Frozen subject-level embeddings for padded bags, (N, M).
-
-    The mask is built from the RAW bag before normalising (CustomNormalizer maps
-    all-zero padding to all -1, which would otherwise look like real windows).
-    """
-    embs_list = []
-    for i in range(0, len(bags_padded), infer_batch):
-        chunk_raw = tf.constant(bags_padded[i : i + infer_batch])
-        mask = model._build_mask(chunk_raw)
-        flat = tf.reshape(chunk_raw, (-1, Ws, C))
-        flat_norm = model.normalizer(flat, training=False)
-        chunk_norm = tf.reshape(flat_norm, (-1, K1, Ws, C))
-        embs = model._encode_subjects(chunk_norm, training=False, mask=mask)
-        embs_list.append(embs.numpy())
-    return np.concatenate(embs_list, axis=0).astype(np.float32)
-
-
-def loso_probe_auc(embeddings: np.ndarray, labels: np.ndarray) -> float:
-    """Leave-one-subject-out logistic-probe AUC — tremor separability of the rep."""
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.model_selection import LeaveOneOut
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.metrics import roc_auc_score
-
-    y = labels.astype(int)
-    prob = np.zeros(len(y))
-    for tr, te in LeaveOneOut().split(embeddings):
-        sc = StandardScaler().fit(embeddings[tr])
-        clf = LogisticRegression(max_iter=2000, class_weight="balanced").fit(
-            sc.transform(embeddings[tr]), y[tr]
-        )
-        prob[te] = clf.predict_proba(sc.transform(embeddings[te]))[:, 1]
-    return roc_auc_score(y, prob)
-
-
-def load_validation_subjects() -> tuple:
-    """Labeled subjects to use for epoch selection during pretraining.
-
-    Excludes the final-evaluation subjects (the tremor∩typing 'common' subjects in
-    fusion_dataset.pickle) so that selecting the best epoch on this set does NOT
-    leak label information into the final LOSO evaluation. Returns (bags_padded, labels).
-    """
-    with open("datasets/sdataset.pickle", "rb") as f:
-        labeled_df = pkl.load(f)
-
-    common_ids = set()
-    try:
-        with open("datasets/fusion_dataset.pickle", "rb") as f:
-            common_ids = set(pkl.load(f)["subject_id"].tolist())
-    except FileNotFoundError:
-        print("WARNING: fusion_dataset.pickle not found — validating on ALL labeled "
-              "subjects, which may leak into the final evaluation.")
-
-    sids = labeled_df["subject_id"].tolist()
-    keep = [i for i, sid in enumerate(sids) if sid not in common_ids]
-    labels = np.array(labeled_df["y_train"].tolist())[keep]
-    bags_padded = _pad_bags([labeled_df["X"].tolist()[i] for i in keep])
-    print(f"Validation set: {len(keep)} labeled subjects "
-          f"(excluded {len(sids) - len(keep)} final-eval subjects); "
-          f"label balance = {np.bincount(labels).tolist()}")
-    return bags_padded, labels
-
-
-def train(
-    model: SubjectContrastiveModel,
-    optimizer: keras.optimizers.Optimizer,
-    val_bags: np.ndarray = None,
-    val_labels: np.ndarray = None,
-    encoder_path: str = None,
-    attention_path: str = None,
-) -> float:
-    """Contrastive pretraining loop.
-
-    If a validation set is given, after each epoch the encoder + attention are
-    scored by LOSO probe AUC on the held-out labeled subjects and the best-AUC
-    weights are checkpointed. Returns the best AUC (-1.0 if no validation set).
-    """
+def train(model: SubjectContrastiveModel, optimizer: keras.optimizers.Optimizer):
     n_subjects = len(subject_data)
     steps_per_epoch = max(1, n_subjects // batch_size)
-    best_auc = -1.0
 
     for epoch in range(num_epochs):
         print(f"\nEpoch {epoch + 1}/{num_epochs}  (lr={learning_rate:.2e})")
@@ -644,15 +610,15 @@ def train(
             if batch is None:
                 continue
 
-            views1, views2 = batch
-            v1_t = tf.constant(views1)
-            v2_t = tf.constant(views2)
+            v1_t = tf.constant(batch[0])
+            v2_t = tf.constant(batch[1])
+            sid_t = tf.constant(batch[2])
 
             metrics, proj2_k_norm = model.train_step_contrastive(
-                v1_t, v2_t, optimizer, model.queue
+                v1_t, v2_t, optimizer, model.queue, model.queue_labels, sid_t
             )
             model._momentum_update()           # EMA: θ_k ← m·θ_k + (1−m)·θ_q
-            model._dequeue_and_enqueue(proj2_k_norm)
+            model._dequeue_and_enqueue(proj2_k_norm, sid_t)
 
             progbar.update(
                 step + 1,
@@ -663,21 +629,6 @@ def train(
             )
 
         prefetch_thread.join()
-
-        # ── Epoch selection: LOSO probe AUC on held-out labeled subjects ──────
-        if val_bags is not None:
-            val_auc = loso_probe_auc(encode_bags(model, val_bags), val_labels)
-            tag = ""
-            if val_auc > best_auc:
-                best_auc = val_auc
-                os.makedirs("weights/tremor", exist_ok=True)
-                model.encoder.save_weights(encoder_path)
-                with open(attention_path, "wb") as f:
-                    pkl.dump(model.attention_layer.get_weights(), f)
-                tag = "  ✓ new best — checkpoint saved"
-            print(f"  val LOSO probe AUC = {val_auc:.3f}  (best {best_auc:.3f}){tag}")
-
-    return best_auc
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -704,34 +655,18 @@ if __name__ == "__main__":
     attention_path = "weights/tremor/tremor_subject_simclr_attention.weights.pkl"
 
     if USE_TRAINING:
-        # Seed key encoder with the same initial weights as the query encoder
         model.initialize_key_encoder()
-
         model.encoder.summary()
         model.projection_head.summary()
 
-        # Held-out labeled subjects for epoch selection (excludes the 22 final-eval
-        # subjects to avoid leakage). Best-AUC weights are checkpointed inside train().
-        val_bags, val_labels = load_validation_subjects()
+        train(model, optimizer)
+
         os.makedirs("weights/tremor", exist_ok=True)
+        model.encoder.save_weights(encoder_path)
+        with open(attention_path, "wb") as f:
+            pkl.dump(model.attention_layer.get_weights(), f)
 
-        best_auc = train(
-            model, optimizer, val_bags, val_labels, encoder_path, attention_path
-        )
-
-        if best_auc < 0:
-            # No validation set was available — fall back to saving the final epoch.
-            model.encoder.save_weights(encoder_path)
-            with open(attention_path, "wb") as f:
-                pkl.dump(model.attention_layer.get_weights(), f)
-        else:
-            # Reload the best checkpoint so the t-SNE below reflects the SAVED weights.
-            model.encoder.load_weights(encoder_path)
-            with open(attention_path, "rb") as f:
-                model.attention_layer.set_weights(pkl.load(f))
-
-        print(f"\nBest validation LOSO probe AUC: {best_auc:.3f}")
-        print(f"Encoder weights saved to '{encoder_path}'")
+        print(f"\nEncoder weights saved to '{encoder_path}'")
         print(f"Attention weights saved to '{attention_path}'")
         print(f"Total training time: {(time.time() - start) / 60:.1f} min")
     else:

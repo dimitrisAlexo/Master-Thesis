@@ -457,7 +457,60 @@ def train(
         )
         return model
 
-    # simclr/subject_simclr: freeze encoder, train, then unfreeze and fine-tune
+    # subject_simclr: BOTH the encoder AND the attention are pretrained. The
+    # 'simclr' recipe below (unfreeze everything, fine-tune at 1e-3 for 50 epochs)
+    # was designed for a RANDOM attention head and would overwrite the pretrained
+    # attention here. Instead:
+    #   Phase 1 — freeze encoder + attention, train ONLY the classifier head on top
+    #             of the frozen pretrained representation (this is the MLP analogue
+    #             of the frozen linear probe that already separates tremor well).
+    #   Phase 2 — unfreeze and fine-tune the whole stack at a LOW LR (1e-4) for few
+    #             epochs, refining the pretrained encoder/attention without erasing
+    #             them.
+    # Together these two phases are LP-FT (Kumar et al., ICLR 2022): probe first so
+    # the head is calibrated, THEN fine-tune everything at low LR. Do not drop the
+    # FT phase — measured F1 falls ~0.80 → ~0.60 without it on this dataset.
+    if current_mode == "subject_simclr":
+        model.freeze_encoder()
+        model.attention_layer.trainable = False
+        model.compile(
+            optimizer=optimizers.Adam(learning_rate=1e-3),
+            loss="sparse_categorical_crossentropy",
+            metrics=["accuracy"],
+            auto_scale_loss=True,
+            run_eagerly=False,
+        )
+        model.fit(
+            train_dataset,
+            validation_data=val_dataset,
+            epochs=num_epochs,
+            batch_size=batch_size,
+            callbacks=[lr_scheduler, clear_memory],
+            verbose=1,
+        )
+
+        print("Gently fine-tuning pretrained encoder + attention (low LR)...")
+        model.unfreeze_encoder()
+        model.attention_layer.trainable = True
+        model.optimizer_embeddings = keras.optimizers.Adam(learning_rate=1e-4)
+        model.compile(
+            optimizer=optimizers.Adam(learning_rate=1e-4),
+            loss="sparse_categorical_crossentropy",
+            metrics=["accuracy"],
+            auto_scale_loss=True,
+            run_eagerly=False,
+        )
+        model.fit(
+            train_dataset,
+            validation_data=val_dataset,
+            epochs=20,
+            batch_size=batch_size,
+            callbacks=[lr_scheduler, clear_memory],
+            verbose=1,
+        )
+        return model
+
+    # simclr: freeze encoder, train, then unfreeze and fine-tune
     model.freeze_encoder()
     model.compile(
         optimizer=optimizers.Adam(learning_rate=5e-4),
@@ -590,6 +643,7 @@ def loso_evaluate(data, input_shape=None, M=DEFAULT_M, batch_size=DEFAULT_BATCH_
         class_predictions = predict(val_dataset, trained_model)
 
         # Compute confusion matrix
+        # predicted_label = (class_predictions[:, 1] > 0.60).astype(int).flatten()
         predicted_label = np.argmax(class_predictions, axis=1).flatten()
         true_label = val_labels.flatten()
 
