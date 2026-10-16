@@ -20,6 +20,11 @@ import subprocess
 import numpy as np
 import pickle as pkl
 
+# Allocate GPU memory on demand instead of grabbing it all up front; without this
+# the per-fold models fragment the pool and fusion OOMs on a 4 GB GPU.
+# Must be set before TensorFlow is imported.
+os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
+
 import tremorSimCLRattentionMIL as tremor_mil
 import typingSimCLRattentionMIL as typing_mil
 import fusion as fusion_mod
@@ -280,4 +285,4 @@ if __name__ == "__main__":
 
     elif args.type == "fusion":
         fusion_mod.MODE = args.model
-        fusion_mod.run_fusion_experiment(repetitions=10, save_path=save_path)
+        fusion_mod.run_fusion_experiment(repetitions=20, save_path=save_path)

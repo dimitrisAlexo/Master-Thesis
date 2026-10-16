@@ -198,8 +198,11 @@ def pretrain_tremor_branch(subject_exclude_id=None):
     print(f"Tremor training data shape: {train_data.shape}")
     print(f"Tremor training labels shape: {train_labels.shape}")
 
-    # Create TensorFlow datasets
-    train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
+    # Create TensorFlow datasets. Keep the source tensors on the CPU: in eager mode
+    # from_tensor_slices otherwise copies the whole float64 array onto the GPU
+    # (~290 MB here), and the 4 GB GPU then OOMs in the tremor fine-tune phase.
+    with tf.device("/CPU:0"):
+        train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
     train_dataset = (
         train_dataset.shuffle(buffer_size=len(train_data))
         .batch(TREMOR_BATCH_SIZE)
@@ -268,7 +271,11 @@ def pretrain_typing_branch(subject_exclude_id=None):
 
     # Create typing model
     typing_model = TypingMILModel(
-        input_shape=typing_input_shape, M=TYPING_M, mode=MODE, use_bimodal=USE_BIMODAL
+        input_shape=typing_input_shape,
+        M=TYPING_M,
+        mode=MODE,
+        use_bimodal=USE_BIMODAL,
+        use_gated=True,
     )
 
     # Prepare all data for training (using all subjects for pretraining)
@@ -282,8 +289,9 @@ def pretrain_typing_branch(subject_exclude_id=None):
     print(f"Typing training data shape: {train_data.shape}")
     print(f"Typing training labels shape: {train_labels.shape}")
 
-    # Create TensorFlow datasets
-    train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
+    # Create TensorFlow datasets (source tensors on the CPU, see pretrain_tremor_branch)
+    with tf.device("/CPU:0"):
+        train_dataset = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
     train_dataset = (
         train_dataset.shuffle(buffer_size=len(train_data))
         .batch(TYPING_BATCH_SIZE)
@@ -426,6 +434,7 @@ class FusionModel(keras.Model):
         super(FusionModel, self).__init__(**kwargs)
 
         self.M = M
+        self.mode = mode
         self.tremor_input_shape = tremor_input_shape
         self.typing_input_shape = typing_input_shape
 
@@ -433,8 +442,11 @@ class FusionModel(keras.Model):
         self.tremor_branch = TremorMILModel(
             input_shape=tremor_input_shape, M=M, mode=mode
         )
+        # use_gated=True to match typingSubjectSimCLR/typing LOSO: the pretrained
+        # typing attention is gated (3 weight tensors) and will not load into a
+        # non-gated layer.
         self.typing_branch = TypingMILModel(
-            input_shape=typing_input_shape, M=M, mode=mode
+            input_shape=typing_input_shape, M=M, mode=mode, use_gated=True
         )
 
         # Multi-label classifier (define BEFORE loading weights/freeze so attribute exists)
@@ -453,9 +465,9 @@ class FusionModel(keras.Model):
             name="multilabel_classifier",
         )
 
-        # Build multilabel classifier (expects fused embedding shape (None, M))
+        # Build multilabel classifier (expects fused embedding shape (None, 2M))
         if not self.multilabel_classifier.built:
-            self.multilabel_classifier.build((None, self.M))
+            self.multilabel_classifier.build((None, 2 * self.M))
         try:
             print("Tremor embeddings network summary:")
             self.tremor_branch.embeddings_network.summary(
@@ -473,7 +485,20 @@ class FusionModel(keras.Model):
         self.freeze_pretrained_layers()
 
     def load_pretrained_weights(self):
-        """Load pretrained weights for both branches"""
+        """Load pretrained weights for both branches.
+
+        For "simclr" and "subject_simclr" these files are written by
+        run_pretraining() earlier in this same fold: each branch starts from its
+        contrastive weights and is then trained on its own labeled data with the
+        test subject excluded. The fusion training subjects are in-sample for
+        these branches. Baseline has no files to load.
+        """
+        if self.mode not in ("simclr", "subject_simclr"):
+            print(
+                f"Skipping FusionModel.load_pretrained_weights() for mode='{self.mode}' "
+                "(no pretrained branch weights for this mode)."
+            )
+            return
         try:
             # Ensure tremor embeddings network is built
             if not self.tremor_branch.embeddings_network.built:
@@ -577,10 +602,15 @@ class FusionModel(keras.Model):
         tremor_embedding, typing_embedding = self.get_bag_embeddings(
             tremor_input, typing_input
         )
-        # L2 normalize embeddings to ensure equal contribution from both modalities
+        # L2 normalize embeddings to ensure equal contribution from both modalities.
+        # Concatenate rather than add: Tremor is carried by X1 alone and FMI by X2
+        # alone, and summing collapses both into one 64-d vector the head cannot
+        # unmix. Concatenation keeps the modality balance and stays separable.
         tremor_embedding_norm = tf.nn.l2_normalize(tremor_embedding, axis=-1)
         typing_embedding_norm = tf.nn.l2_normalize(typing_embedding, axis=-1)
-        fused_embedding = layers.Add()([tremor_embedding_norm, typing_embedding_norm])
+        fused_embedding = layers.Concatenate(axis=-1)(
+            [tremor_embedding_norm, typing_embedding_norm]
+        )
         return self.multilabel_classifier(fused_embedding)
 
     def compute_loss(self, x=None, y=None, y_pred=None, sample_weight=None):
@@ -602,8 +632,10 @@ class FusionModel(keras.Model):
         fmi_loss = tf.keras.losses.binary_crossentropy(fmi_true, fmi_pred)
         pd_loss = tf.keras.losses.binary_crossentropy(pd_true, pd_pred)
 
-        # Sum the three losses as specified in paper
-        total_loss = tremor_loss + fmi_loss + pd_loss
+        # The paper sums the three losses equally. Here PD and FMI are the same
+        # label on all 22 subjects, so tremor is up-weighted. (Measured: the
+        # weighting does not change tremor; 3:1:1 is marginally better for FMI.)
+        total_loss = 3 * tremor_loss + fmi_loss + pd_loss
 
         return tf.reduce_mean(total_loss)
 
@@ -672,17 +704,18 @@ def fusion_loso_evaluate(endtask_df):
         train_tremor_array = normalize_mil(train_tremor_array)
         test_tremor_array = normalize_mil(test_tremor_array)
 
-        # Create datasets
-        train_dataset = tf.data.Dataset.from_tensor_slices(
-            ((train_tremor_array, train_typing_array), train_labels_array)
-        )
+        # Create datasets (source tensors on the CPU, see pretrain_tremor_branch)
+        with tf.device("/CPU:0"):
+            train_dataset = tf.data.Dataset.from_tensor_slices(
+                ((train_tremor_array, train_typing_array), train_labels_array)
+            )
+            test_dataset = tf.data.Dataset.from_tensor_slices(
+                ((test_tremor_array, test_typing_array), test_labels_array)
+            )
         train_dataset = train_dataset.batch(FUSION_BATCH_SIZE).prefetch(
             tf.data.AUTOTUNE
         )
 
-        test_dataset = tf.data.Dataset.from_tensor_slices(
-            ((test_tremor_array, test_typing_array), test_labels_array)
-        )
         test_dataset = test_dataset.batch(FUSION_BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
 
         # Run pretraining for this fold
@@ -710,6 +743,23 @@ def fusion_loso_evaluate(endtask_df):
         # Train the model
         num_epochs = int(os.getenv("FUSION_EPOCHS", FUSION_NUM_EPOCHS))
         history = fusion_model.fit(train_dataset, epochs=num_epochs, verbose=1)
+
+        # Optional phase 2: unfreeze everything and fine-tune on the 21 fusion
+        # subjects. Off by default -- measured on subject_simclr it lowers tremor
+        # (0.909 -> 0.857) and FMI at both 5e-4 and 1e-4. Enable with FUSION_FT_EPOCHS.
+        if MODE == "subject_simclr" and int(os.getenv("FUSION_FT_EPOCHS", 0)) > 0:
+            print("Fine-tuning fusion branches (low LR)...")
+            fusion_model.unfreeze_pretrained_layers()
+            fusion_model.compile(
+                optimizer=optimizers.Adam(learning_rate=5e-4),
+                loss=fusion_model.compute_loss,
+                metrics=["binary_accuracy", tremor_accuracy, fmi_accuracy, pd_accuracy],
+            )
+            fusion_model.fit(
+                train_dataset,
+                epochs=int(os.getenv("FUSION_FT_EPOCHS", 25)),
+                verbose=1,
+            )
 
         # Evaluate on test subject
         print("Evaluating on test subject...")

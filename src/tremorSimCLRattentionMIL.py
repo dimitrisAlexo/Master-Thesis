@@ -290,6 +290,15 @@ class MILModel(keras.Model):
         self.optimizer_other = value
 
     def create_mask_layer(self, inputs):
+        if self.mode == "subject_simclr":
+            # Inputs arrive min-max normalised (normalize_mil), which turns the all-zero
+            # padding windows into all -1, so the sum test below never fires and ~50%
+            # of the attention lands on padding. The subject-level pretraining masked
+            # padding (mask built from the raw data), so mask it here as well: a
+            # padding window is constant, a real accelerometer window never is.
+            win_range = tf.reduce_max(inputs, axis=[2, 3]) - tf.reduce_min(inputs, axis=[2, 3])
+            return tf.where(win_range[..., None] < 1e-6, -np.inf, 0.0)
+
         # Sum the features along the last two dimensions (500, 3)
         summed_features = tf.reduce_sum(inputs, axis=[2, 3], keepdims=True)
 

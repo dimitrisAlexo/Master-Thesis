@@ -1,10 +1,2 @@
-data
 __pycache__/
 **/__pycache__/
-*.pyc
-*.h5
-*.pickle
-*.pkl
-*.vscode/
-*.png
-src/plots/*
